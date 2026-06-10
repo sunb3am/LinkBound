@@ -1,0 +1,15 @@
+# Secrets (Gemini API key, etc.)
+.env
+# Local runtime data: SQLite DB, screenshots, uploaded CSVs
+data/
+# Per-operator Chrome profiles (contain logged-in sessions, never commit)
+profiles/
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+# Build output from package.ps1 (shareable zip)
+dist/
+# Playwright MCP debug snapshots (local only)
+.playwright-mcp/

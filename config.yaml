@@ -1,0 +1,115 @@
+# LinkBound — configuration
+# Edit values here; no code changes needed.
+
+server:
+  host: "127.0.0.1"
+  port: 8000
+
+# Each operator gets an isolated Chrome profile directory so their logged-in
+# LinkedIn session persists across runs. The first run opens a browser; log in
+# once (handle 2FA), then close. Future runs reuse the session.
+operators:
+  # Add yourself here. The first word of "label" becomes {sender} in messages.
+  me:
+    label: "Your Name"
+    profile_dir: "profiles/me"
+  # Example: add more operators for team members:
+  # alice:
+  #   label: "Alice Chen"
+  #   profile_dir: "profiles/alice"
+
+# Safety governor. Conservative defaults to protect your account.
+# Research consensus (2026): 15-25 connection requests/day for established
+# accounts, randomized timing, stop on any limit warning.
+safety:
+  daily_cap: 22                 # max connection requests sent per operator per day
+  min_delay_seconds: 30         # gap between profiles (set equal for a fixed 30s gap)
+  max_delay_seconds: 30         # gap between profiles (widen above min to randomize)
+  business_hours_only: false    # if true, only send within the window below
+  business_hours_start: 9       # 24h local time
+  business_hours_end: 18
+  stop_on_limit_warning: true   # hard-stop the run if LinkedIn shows a limit banner
+
+# Behavior toggles for how each profile is handled.
+behavior:
+  # If a profile is already a 1st-degree connection, send the rendered message
+  # via the Message composer (a direct message) instead of skipping.
+  message_if_connected: true
+  # Allow InMail to non-connections when action is AUTO and there is no Connect
+  # option. Default false: InMail otherwise only happens for an EXPLICIT inmail
+  # action. This prevents accidental InMails (and credit spend).
+  inmail_enabled: false
+  # If a connection-request note field cannot be revealed, send a note-less
+  # invite anyway. Default false: we prefer to flag the row for review.
+  allow_noteless_fallback: false
+  # Default action when a batch doesn't specify one:
+  # auto | connect | connect_note | inmail | message
+  default_action: "auto"
+
+# AI (Gemini) configuration. The API key is read from .env (GEMINI_API_KEY),
+# never from this file.
+ai:
+  enabled: true
+  model: "gemini-3.5-flash"
+  model_reasoning: "gemini-3.1-pro-preview"
+  model_fast: "gemini-3-flash-preview"
+
+# Programmatic API. Lets other tools enqueue outbound batches over HTTP.
+# API keys are read from OUTBOUND_API_KEYS env var (.env), never from this file.
+api:
+  require_key: true          # demand a valid X-API-Key on /api/v1/* endpoints
+  default_webhook: ""        # optional URL POSTed when a batch finishes
+
+browser:
+  # "chrome" uses the installed Google Chrome channel. Use "chromium" to fall
+  # back to Playwright's bundled Chromium if Chrome is not installed.
+  channel: "chrome"
+  headless: false               # must be false: headed is safer and 2FA needs UI
+  # Optional: connect to an existing browser over CDP (managed/remote browser).
+  # Leave empty for local. Example: "ws://127.0.0.1:9222/..." or a CDP http URL.
+  cdp_url: ""
+  nav_timeout_ms: 30000
+
+# Maps source CSV headers to the canonical fields the tool uses.
+# Add alternative header names a CSV might use; first match wins.
+# Apollo exports are supported out of the box. Matching is case-insensitive.
+column_mapping:
+  linkedin_url:
+    - "linkedin_url"
+    - "url"
+    - "URL"
+    - "profile_url"
+    - "linkedin"
+    - "LinkedIn"
+    - "Person Linkedin Url"
+    - "Linkedin Url"
+    - "LinkedIn URL"
+  # Full-name column. If present and first_name is absent, the tool splits
+  # this into first_name (and last_name) automatically.
+  name:
+    - "name"
+    - "full_name"
+    - "Full Name"
+    - "Name"
+  first_name:
+    - "first_name"
+    - "First Name"
+  last_name:
+    - "last_name"
+    - "Last Name"
+  company:
+    - "company"
+    - "Company Name"
+    - "Company"
+  role:
+    - "role"
+    - "Title"
+    - "Job Title"
+  email:
+    - "email"
+    - "Email"
+  template:
+    - "template"
+    - "type"
+    - "Type"
+    - "Template"

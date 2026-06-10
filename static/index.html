@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="LinkBound — Intelligent LinkedIn outbound automation and CRM for modern teams. Run targeted campaigns, manage contacts, and track results — all from one place.">
+  <meta property="og:title" content="LinkBound · Outbound Intelligence">
+  <meta property="og:description" content="Intelligent LinkedIn outbound automation and advanced CRM for modern sales teams.">
+  <meta property="og:image" content="/static/meta-image.png">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="LinkBound · Outbound Intelligence">
+  <meta name="twitter:description" content="Run targeted LinkedIn campaigns at scale.">
+  <title>LinkBound · Outbound Intelligence</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+
+  <!-- CDNs -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
+</head>
+<body>
+  <!-- ========================================================= ONBOARDING -->
+  <div id="onboardingOverlay" class="onboarding-overlay" aria-modal="true" role="dialog">
+    <div class="onboarding-card">
+      <div class="onboarding-logo">
+        <svg class="brand-svg" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="36" height="36" rx="9" fill="#38613A"/>
+          <path d="M9 18C9 13.0294 13.0294 9 18 9" stroke="#D4A574" stroke-width="2.5" stroke-linecap="round"/>
+          <path d="M27 18C27 22.9706 22.9706 27 18 27" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="18" cy="18" r="3.5" fill="#D4A574"/>
+          <path d="M18 9V12M18 24V27M9 18H12M24 18H27" stroke="#fff" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+        </svg>
+      </div>
+      <div class="onboarding-steps">
+        <!-- Step 1 -->
+        <div class="ob-step active" id="ob-1">
+          <h2 class="ob-title">Welcome to LinkBound</h2>
+          <p class="ob-desc">Your intelligent LinkedIn outbound engine. Run personalised campaigns, track every contact, and analyse results — all from one place.</p>
+          <div class="ob-feature-list">
+            <div class="ob-feature"><span class="ob-dot"></span><strong>Campaigns</strong> — Upload a CSV or paste URLs, compose a message, preview, and launch.</div>
+            <div class="ob-feature"><span class="ob-dot"></span><strong>Templates</strong> — Reusable message templates with variable substitution.</div>
+            <div class="ob-feature"><span class="ob-dot"></span><strong>Audience Manager</strong> — Full CRM of every contact you've ever reached out to.</div>
+            <div class="ob-feature"><span class="ob-dot"></span><strong>Analytics</strong> — Send volume over time, template performance, and KPIs.</div>
+            <div class="ob-feature"><span class="ob-dot"></span><strong>Sessions</strong> — Run multiple LinkedIn profiles concurrently without crossover.</div>
+          </div>
+        </div>
+        <!-- Step 2 -->
+        <div class="ob-step" id="ob-2">
+          <h2 class="ob-title">Set Up Your First Session</h2>
+          <p class="ob-desc">A <em>Session</em> maps to one LinkedIn account. Each session keeps a separate browser profile so cookies, login state, and rate limits are fully isolated.</p>
+          <div class="ob-instruction">
+            <div class="ob-step-num">1</div>
+            <div>Go to <strong>Settings → Sessions</strong> and click <strong>Add Session</strong> with your name.</div>
+          </div>
+          <div class="ob-instruction">
+            <div class="ob-step-num">2</div>
+            <div>On your first run, a browser window will open. Log in to LinkedIn and complete 2FA.</div>
+          </div>
+          <div class="ob-instruction">
+            <div class="ob-step-num">3</div>
+            <div>After login, the session is saved — subsequent runs start instantly.</div>
+          </div>
+        </div>
+        <!-- Step 3 -->
+        <div class="ob-step" id="ob-3">
+          <h2 class="ob-title">You're Ready 🚀</h2>
+          <p class="ob-desc">Start by creating a campaign. You'll need a CSV (or LinkedIn URLs) and a message. Always do a <strong>Dry Run</strong> first to preview what will actually be sent.</p>
+          <div class="ob-tip">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+            Tip: Use the <strong>?</strong> buttons throughout the app for contextual help, or click <strong>Help & Guide</strong> in the top bar any time.
+          </div>
+        </div>
+      </div>
+      <div class="onboarding-nav">
+        <div class="ob-dots">
+          <span class="ob-dot-ind active" data-step="1"></span>
+          <span class="ob-dot-ind" data-step="2"></span>
+          <span class="ob-dot-ind" data-step="3"></span>
+        </div>
+        <div class="ob-btns">
+          <button class="btn ghost" id="obSkip">Skip</button>
+          <button class="btn primary" id="obNext">Next →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ HELP MODAL -->
+  <div id="helpModal" class="modal-backdrop" style="display:none;" role="dialog" aria-modal="true">
+    <div class="modal-card help-modal-card">
+      <div class="modal-header">
+        <h3>LinkBound — Help & Guide</h3>
+        <button class="btn ghost icon-btn" id="closeHelp" aria-label="Close"><i data-lucide="x"></i></button>
+      </div>
+      <div class="help-body">
+        <div class="help-section">
+          <h4>🚀 Campaigns</h4>
+          <p>Upload an Apollo/ZoomInfo CSV (or paste LinkedIn profile URLs) → choose an action and message → preview the batch → launch. Always use <strong>Dry Run</strong> first to validate without sending.</p>
+          <ul>
+            <li><strong>Auto</strong> — Smartest option: sends a connect request if not connected, or a DM if already 1st degree.</li>
+            <li><strong>Connect + Note</strong> — Connection invite with up to 300 characters.</li>
+            <li><strong>Connect only</strong> — Silent connection with no note.</li>
+            <li><strong>Message</strong> — Direct message to 1st-degree connections only.</li>
+          </ul>
+        </div>
+        <div class="help-section">
+          <h4>📋 Templates</h4>
+          <p>Create reusable message templates. Use <code>{first_name}</code>, <code>{company}</code>, <code>{sender}</code> as dynamic variables. Templates can be selected per campaign and tracked individually in Analytics.</p>
+        </div>
+        <div class="help-section">
+          <h4>▶ Live Run</h4>
+          <p>Monitor the active run in real-time. The activity feed shows each profile as it is processed. Use the <strong>Pause</strong> / <strong>Resume</strong> and <strong>Stop Run</strong> buttons in the top bar to control execution.</p>
+        </div>
+        <div class="help-section">
+          <h4>👥 Audience Manager</h4>
+          <p>Every contact you've ever reached out to is stored here. Filter, sort, search, and export to CSV. The dedup engine prevents reaching out to the same person twice across batches.</p>
+        </div>
+        <div class="help-section">
+          <h4>📊 Analytics</h4>
+          <p>Track total contacts, sends per day (30-day trend), and template usage. Refresh the dashboard after each campaign to see updated numbers.</p>
+        </div>
+        <div class="help-section">
+          <h4>⚙️ Sessions (Operators)</h4>
+          <p>Each <em>Session</em> is one LinkedIn account. Sessions are fully isolated: separate Chrome profile, separate dedup scope, separate rate limits. Create a session per person or per LinkedIn account you manage.</p>
+          <ul>
+            <li>On first use, a Chrome window opens so you can log in and complete 2FA.</li>
+            <li>After login, the profile is saved — future runs start without a login prompt.</li>
+            <li>Deleting a session removes it from the dropdown but does not delete its browser profile or data.</li>
+          </ul>
+        </div>
+        <div class="help-section">
+          <h4>🔒 Safety Limits</h4>
+          <p>Configure daily cap, min/max delay between actions, and business-hours constraints in <strong>Settings → Safety Limits</strong>. The runner enforces these automatically and stops when the cap is hit.</p>
+        </div>
+        <div class="help-section">
+          <h4>✨ AI Features</h4>
+          <p>Configure a Gemini API key in <code>.env</code> to enable AI-powered message generation, improvement, and per-profile personalisation. The AI pill in the top bar shows active / inactive status.</p>
+        </div>
+        <div class="help-section">
+          <h4>📂 CSV Column Mapping</h4>
+          <p>LinkBound auto-detects columns: <code>linkedin_url</code>, <code>first_name</code>, <code>last_name</code>, <code>company</code>, <code>email</code>. If your CSV uses different names, the smart heuristic matcher still finds them. You can also paste raw LinkedIn URLs one per line.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ APP SHELL -->
+  <div class="app-container">
+
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar">
+      <div class="brand">
+        <!-- Unique LinkBound brand mark: orbit ring with node -->
+        <div class="brand-icon">
+          <svg class="brand-svg" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect width="36" height="36" rx="9" fill="#38613A"/>
+            <path d="M9 18C9 13.0294 13.0294 9 18 9" stroke="#D4A574" stroke-width="2.5" stroke-linecap="round"/>
+            <path d="M27 18C27 22.9706 22.9706 27 18 27" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+            <circle cx="18" cy="18" r="3.5" fill="#D4A574"/>
+            <path d="M18 9V12M18 24V27M9 18H12M24 18H27" stroke="#fff" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+          </svg>
+        </div>
+        <div class="brand-name">LinkBound</div>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-label">Workspace</div>
+        <div class="nav-item active" data-view="campaigns" id="nav-campaigns">
+          <div class="nav-icon"><i data-lucide="rocket"></i></div>
+          <div>Campaigns</div>
+        </div>
+        <div class="nav-item" data-view="templates" id="nav-templates">
+          <div class="nav-icon"><i data-lucide="layout-template"></i></div>
+          <div>Templates</div>
+        </div>
+        <div class="nav-item" data-view="run" id="nav-run">
+          <div class="nav-icon"><i data-lucide="play"></i></div>
+          <div>Live Run</div>
+        </div>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-label">Data</div>
+        <div class="nav-item" data-view="crm" id="nav-crm">
+          <div class="nav-icon"><i data-lucide="users"></i></div>
+          <div>Audience Manager</div>
+        </div>
+        <div class="nav-item" data-view="analytics" id="nav-analytics">
+          <div class="nav-icon"><i data-lucide="bar-chart-2"></i></div>
+          <div>Analytics</div>
+        </div>
+        <div class="nav-item" data-view="batches" id="nav-batches">
+          <div class="nav-icon"><i data-lucide="archive"></i></div>
+          <div>Batch History</div>
+        </div>
+        <div class="nav-item" data-view="settings" id="nav-settings">
+          <div class="nav-icon"><i data-lucide="settings"></i></div>
+          <div>Settings</div>
+        </div>
+      </div>
+
+      <div class="sidebar-spacer"></div>
+
+      <!-- Operator Widget -->
+      <div class="operator-widget">
+        <div class="op-row-top">
+          <div class="op-avatar" id="opAvatar">OP</div>
+          <div class="op-info">
+            <div class="op-name-row">
+              <div class="op-name" id="opDisplayName">Select Session</div>
+              <button class="op-edit-btn" id="opEditBtn" title="Edit display name">
+                <i data-lucide="pencil" style="width:12px;height:12px;"></i>
+              </button>
+            </div>
+            <div class="op-status" id="opStatusLabel">● Session active</div>
+          </div>
+        </div>
+        <select id="operator" class="op-select" title="Switch active session"></select>
+        <div class="op-name-edit hidden" id="opNameEditRow">
+          <input type="text" id="opDisplayNameInput" placeholder="Display name..." class="op-name-input">
+          <button class="btn small primary" id="opNameSaveBtn">Save</button>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+
+      <!-- Topbar -->
+      <header class="topbar">
+        <div class="breadcrumb" id="breadcrumb">Campaigns</div>
+        <div class="topbar-actions">
+          <!-- AI Status Pill -->
+          <div class="ai-pill" id="aiPill" title="Gemini AI: Not configured">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="6" cy="6" r="6"/></svg>
+            <span id="aiPillLabel">AI Off</span>
+          </div>
+          <button class="btn small ghost" id="helpBtn" title="Help & Guide">
+            <i data-lucide="help-circle" style="width:16px;height:16px;"></i> Guide
+          </button>
+          <button class="btn small" id="globalPauseBtn" disabled>Pause</button>
+          <button class="btn small danger" id="globalStopBtn" disabled>Stop Run</button>
+        </div>
+      </header>
+
+      <!-- ============================================================ CAMPAIGNS -->
+      <section id="view-campaigns" class="view-panel active animate-reveal">
+        <div class="card wizard-card">
+          <div class="card-title">Campaign Wizard</div>
+
+          <div class="wizard-progress">
+            <div class="step-indicator active" data-step="1">
+              <div class="step-num">01</div>
+              <div class="step-label">Audience</div>
+            </div>
+            <div class="step-indicator" data-step="2">
+              <div class="step-num">02</div>
+              <div class="step-label">Message</div>
+            </div>
+            <div class="step-indicator" data-step="3">
+              <div class="step-num">03</div>
+              <div class="step-label">Preview</div>
+            </div>
+          </div>
+
+          <!-- Step 1: Audience -->
+          <div id="step1" class="wizard-step-content active">
+            <h2>Who are we contacting?</h2>
+            <p class="hint" style="margin-bottom: 24px;">Upload an Apollo/ZoomInfo CSV or paste LinkedIn URLs directly.
+              <span class="info-bubble" data-tooltip="Supported columns: linkedin_url, first_name, last_name, company, email. Extra columns are ignored. Excel .xlsx also supported.">?</span>
+            </p>
+
+            <div class="mode-toggles">
+              <button class="mode-btn active" data-mode="csv" id="modeCSV">CSV File</button>
+              <button class="mode-btn" data-mode="urls" id="modeURLs">Paste URLs</button>
+            </div>
+
+            <div id="csvSection">
+              <label class="upload-area" for="csvFile" id="uploadLabel">
+                <div class="upload-icon">
+                  <i data-lucide="file-spreadsheet" style="width:40px;height:40px;"></i>
+                </div>
+                <h3>Click to upload CSV or Excel</h3>
+                <p class="hint">Columns like <code>linkedin_url</code>, <code>first_name</code> automatically mapped.</p>
+                <input type="file" id="csvFile" accept=".csv,.xlsx" class="hidden">
+              </label>
+              <div id="csvFileName" class="csv-file-name"></div>
+            </div>
+
+            <div id="urlsSection" class="hidden">
+              <p class="hint" style="margin-bottom: 12px;">Paste one LinkedIn profile URL per line.
+                <span class="info-bubble" data-tooltip="Format: https://linkedin.com/in/username. One URL per line. Names will be resolved from the profile page when the run starts.">?</span>
+              </p>
+              <textarea id="urlsText" placeholder="https://linkedin.com/in/jane-doe&#10;https://linkedin.com/in/john-smith" rows="7"></textarea>
+            </div>
+
+            <div class="wizard-actions">
+              <button class="btn primary" id="btnNext1">Next: Message →</button>
+            </div>
+          </div>
+
+          <!-- Step 2: Message -->
+          <div id="step2" class="wizard-step-content">
+            <h2>What are we saying?</h2>
+            <p class="hint" style="margin-bottom: 24px;">Pick a saved template or write a custom message. Variables like <code>{first_name}</code> are filled in at send time.</p>
+
+            <div class="form-group">
+              <label>
+                Action
+                <span class="info-bubble" data-tooltip="Auto is the safest choice — it connects if not connected, or sends a DM if you're already 1st degree. Connect + Note uses your message as the invite note (≤300 chars). Message requires an existing 1st-degree connection.">?</span>
+              </label>
+              <select id="actionSelect">
+                <option value="auto">Auto (Smart routing)</option>
+                <option value="connect_note">Connect + Note (Max 300 chars)</option>
+                <option value="connect">Connect only (No note)</option>
+                <option value="message">Message (1st degree only)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label>
+                Template
+                <span class="info-bubble" data-tooltip="Select a saved template to pre-fill the message body. You can still edit it. Create templates in the Templates tab.">?</span>
+              </label>
+              <select id="templatePicker"></select>
+            </div>
+
+            <div class="form-group" style="position: relative;">
+              <label>Message Body</label>
+              <textarea id="msgTemplate" placeholder="Hi {first_name}, ..."></textarea>
+              <div style="display: flex; justify-content: space-between; margin-top: 8px; align-items: center;">
+                <div class="var-chips">
+                  <span class="var-chip" data-var="{first_name}">{first_name}</span>
+                  <span class="var-chip" data-var="{company}">{company}</span>
+                  <span class="var-chip" data-var="{sender}">{sender}</span>
+                </div>
+                <div id="charCount" style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-faint);">0 chars</div>
+              </div>
+            </div>
+
+            <!-- AI Drawer -->
+            <div class="ai-drawer" id="aiDrawer">
+              <div class="ai-header">
+                <span>✨</span> AI Assistant
+                <span class="info-bubble" data-tooltip="Uses Gemini AI to generate or improve your message. Set GEMINI_API_KEY in your .env file to activate. Respects the character limit for connect notes.">?</span>
+              </div>
+              <div style="display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;">
+                <div class="form-group" style="flex-grow: 1; margin: 0; min-width: 160px;">
+                  <input type="text" id="aiGoal" placeholder="Goal (e.g. 'book a 15 min intro')">
+                </div>
+                <div class="form-group" style="margin: 0; width: 150px;">
+                  <select id="aiVoice">
+                    <option value="auto">Auto Voice</option>
+                    <option value="founder">Founder</option>
+                    <option value="professional">Professional</option>
+                    <option value="casual">Casual</option>
+                  </select>
+                </div>
+                <button class="btn small" id="aiGenerate">Generate</button>
+                <button class="btn small" id="aiImprove">Improve</button>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="toggle">
+                <input type="checkbox" id="aiPersonalize">
+                <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                <span class="toggle-label">Personalise each message using profile data (AI)</span>
+              </label>
+              <div class="hint" style="margin-top: 8px; padding-left: 56px;">Adds a unique personalised sentence per profile using Gemini. Requires AI to be configured.</div>
+            </div>
+
+            <div class="wizard-actions" style="justify-content: space-between;">
+              <button class="btn" id="btnBack2">← Back</button>
+              <button class="btn primary" id="btnNext2">Preview Batch →</button>
+            </div>
+          </div>
+
+          <!-- Step 3: Preview & Launch -->
+          <div id="step3" class="wizard-step-content">
+            <h2>Review & Launch</h2>
+
+            <div id="previewError" style="color: var(--accent-coral); margin-bottom: 16px;"></div>
+
+            <div class="stats-grid" id="previewStats"></div>
+
+            <div class="form-group" style="margin-top: 24px;">
+              <label>Run Mode
+                <span class="info-bubble" data-tooltip="Dry Run simulates the entire batch without sending any messages or connections. Always do a dry run first to check your CSV mapping and message rendering.">?</span>
+              </label>
+              <div style="display: flex; gap: 32px; flex-wrap: wrap; margin-top: 12px;">
+                <label class="toggle">
+                  <input type="checkbox" id="dryRun" checked>
+                  <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                  <span class="toggle-label">Dry Run (Safe testing)</span>
+                </label>
+                <label class="toggle">
+                  <input type="checkbox" id="sendOnMismatch">
+                  <div class="toggle-track"><div class="toggle-thumb"></div></div>
+                  <span class="toggle-label">Send even if company mismatches
+                    <span class="info-bubble" data-tooltip="When enabled, sends the message even if the company name on the profile doesn't match the CSV. Useful for leads who may have changed roles.">?</span>
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            <div class="table-wrapper" style="max-height: 280px; overflow-y: auto; margin-bottom: 24px;">
+              <table id="previewTable">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Name</th>
+                    <th>Company</th>
+                    <th>Action</th>
+                    <th>Message Preview</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+
+            <div class="wizard-actions" style="justify-content: space-between;">
+              <button class="btn" id="btnBack3">← Back</button>
+              <button class="btn candidate" id="btnLaunch">Launch Campaign <i data-lucide="rocket" style="width:16px;"></i></button>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ============================================================ TEMPLATES -->
+      <section id="view-templates" class="view-panel animate-reveal">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 48px;">
+          <div class="stagger-1">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 32px;">
+              <h2 style="margin: 0;">Saved Templates</h2>
+              <span class="info-bubble" data-tooltip="Templates store reusable message blueprints. Variables like {first_name} and {company} are substituted at send time. Templates are tracked in Analytics.">?</span>
+            </div>
+            <div id="templateList" style="display: flex; flex-direction: column; gap: 16px;"></div>
+          </div>
+          <div class="stagger-2">
+            <div class="card">
+              <div class="card-title" id="tplEditorTitle">New Template</div>
+              <input type="hidden" id="tplEditId">
+              <div class="form-group">
+                <label>Template Name</label>
+                <input type="text" id="tplName" placeholder="e.g. Warm Intro - Founder">
+              </div>
+              <div class="form-group">
+                <label>Intended Action</label>
+                <select id="tplAction">
+                  <option value="connect_note">Connect + Note</option>
+                  <option value="message">Message (DM)</option>
+                  <option value="inmail">InMail</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Body</label>
+                <textarea id="tplBody" rows="8" placeholder="Hi {first_name}, ..."></textarea>
+                <div class="var-chips" style="margin-top: 8px;">
+                  <span class="var-chip" data-tpl-var="{first_name}">{first_name}</span>
+                  <span class="var-chip" data-tpl-var="{company}">{company}</span>
+                  <span class="var-chip" data-tpl-var="{sender}">{sender}</span>
+                </div>
+              </div>
+              <div style="display: flex; gap: 12px; margin-top: 24px;">
+                <button class="btn primary" id="tplSave">Save Template</button>
+                <button class="btn" id="tplNew">Clear</button>
+                <button class="btn danger hidden" id="tplDelete">Delete</button>
+              </div>
+              <div id="tplError" style="color: var(--accent-coral); margin-top: 12px;"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ LIVE RUN -->
+      <section id="view-run" class="view-panel animate-reveal">
+        <div class="card stagger-1" style="margin-bottom: 32px; text-align: center; padding: 48px;">
+          <div class="card-title" style="margin: 0 auto 24px auto;">System Status</div>
+          <h2 id="runStateLabel" style="color: var(--accent-green); margin-bottom: 16px; font-size: 2.5rem;">Idle</h2>
+          <div id="runMessage" style="color: var(--text-faint); font-family: var(--font-mono);">No active batch.</div>
+        </div>
+
+        <div class="stats-grid stagger-2">
+          <div class="stat-card">
+            <div class="stat-val" id="numSent">0</div>
+            <div class="stat-lbl">Sent / Connected</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-val" id="numSkipped">0</div>
+            <div class="stat-lbl">Skipped (Dedup)</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-val" id="numFailed">0</div>
+            <div class="stat-lbl">Failed</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-val" id="numTotal">0</div>
+            <div class="stat-lbl">Total Processed</div>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 12px; margin-top: 32px; margin-bottom: 16px;">
+          <div class="card-title" style="margin: 0;">Activity Feed</div>
+          <span class="info-bubble" data-tooltip="Live feed of every profile being processed. New items appear at the top. Each shows the person's name, company, the action taken, and the outcome status.">?</span>
+        </div>
+        <div class="feed-container stagger-4" id="feed"></div>
+      </section>
+
+      <!-- ============================================================ AUDIENCE MANAGER (CRM) -->
+      <section id="view-crm" class="view-panel animate-reveal">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px;" class="stagger-1">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <h2 style="margin: 0;">Audience Manager</h2>
+            <span class="info-bubble" data-tooltip="Every contact you've reached out to is stored here. The dedup engine prevents contacting the same person twice. Export to CSV for external use.">?</span>
+          </div>
+          <div style="display: flex; gap: 12px; align-items: center;">
+            <input type="text" id="historySearch" placeholder="Search contacts…" style="width: 240px; border-bottom: 1px solid rgba(0,0,0,0.1); padding: 8px;">
+            <button class="btn small" id="historyRefresh" title="Refresh"><i data-lucide="refresh-cw" style="width:14px;"></i></button>
+            <button class="btn small" id="btnExportCsv"><i data-lucide="download" style="width:14px;"></i> Export CSV</button>
+          </div>
+        </div>
+        <div class="card stagger-2" style="padding: 0; overflow: hidden; display: flex; flex-direction: column; height: 560px;">
+          <div id="crmGrid" class="ag-theme-alpine" style="height: 100%; width: 100%;"></div>
+        </div>
+      </section>
+
+      <!-- ============================================================ BATCHES -->
+      <section id="view-batches" class="view-panel animate-reveal">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px;" class="stagger-1">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <h2 style="margin: 0;">Batch History</h2>
+            <span class="info-bubble" data-tooltip="Each campaign launch creates a Batch record. Batches track total counts of sent, skipped, and failed profiles and their final status.">?</span>
+          </div>
+          <button class="btn small" id="batchesRefresh" title="Refresh"><i data-lucide="refresh-cw" style="width:14px;"></i></button>
+        </div>
+        <div class="card stagger-2" style="padding: 0; overflow: hidden; display: flex; flex-direction: column; height: 560px;">
+          <div id="batchesGrid" class="ag-theme-alpine" style="height: 100%; width: 100%;"></div>
+        </div>
+      </section>
+
+      <!-- ============================================================ ANALYTICS -->
+      <section id="view-analytics" class="view-panel animate-reveal">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px;" class="stagger-1">
+          <h2 style="margin: 0;">Analytics Dashboard</h2>
+          <button class="btn small" id="analyticsRefresh">Refresh</button>
+        </div>
+
+        <div class="stats-grid stagger-2" id="analyticsKpis">
+          <div class="stat-card">
+            <div class="stat-val" id="kpiTotal">—</div>
+            <div class="stat-lbl">Total Contacted</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-val" id="kpiActive">—</div>
+            <div class="stat-lbl">Active Campaigns</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-val" style="color: var(--accent-green);" id="kpiToday">—</div>
+            <div class="stat-lbl">Sent Today</div>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-top: 32px;" class="stagger-3">
+          <div class="card">
+            <div class="card-title">Sends Over Time (30 Days)</div>
+            <div style="height: 250px; position: relative;">
+              <canvas id="analyticsChartCanvas"></canvas>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">Top Templates</div>
+            <div style="height: 250px; position: relative;">
+              <canvas id="analyticsTemplatesCanvas"></canvas>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ SETTINGS -->
+      <section id="view-settings" class="view-panel animate-reveal">
+        <div class="stagger-1">
+          <h2 style="margin-bottom: 32px;">Settings</h2>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px;" class="stagger-2">
+
+          <!-- AI Configuration -->
+          <div class="card">
+            <div class="card-title" style="display: flex; align-items: center; gap: 8px;">
+              AI Configuration
+              <span class="info-bubble" data-tooltip="By default, the server's free-tier Gemini API key is used. Enter your own Gemini API key below to bypass server rate limits or access advanced reasoning models. This key is stored securely in your browser and sent securely via headers.">?</span>
+            </div>
+            <div class="form-group">
+              <label>Custom Gemini API Key</label>
+              <input type="password" id="customGeminiKey" placeholder="AIzaSy...">
+              <div class="help-text">Leave blank to use the system default key.</div>
+            </div>
+            <div class="form-group" style="margin-top: 16px;">
+              <label>Preferred Model</label>
+              <select id="customGeminiModel">
+                <option value="gemini-3.5-flash">Gemini 3.5 Flash (Fast, Recommended)</option>
+                <option value="gemini-3.1-pro">Gemini 3.1 Pro (Reasoning, Slower)</option>
+              </select>
+            </div>
+            <button class="btn small" id="btnSaveAiConfig" style="margin-top: 16px;">Save AI Settings</button>
+          </div>
+
+          <!-- Safety Limits -->
+          <div class="card">
+            <div class="card-title" style="display: flex; align-items: center; gap: 8px;">
+              Safety Limits
+              <span class="info-bubble" data-tooltip="Daily cap is the maximum number of actions per operator per day. Min/max delay adds a randomised pause between each send to mimic human behaviour and avoid LinkedIn rate limits.">?</span>
+            </div>
+            <div class="form-group" style="display: flex; align-items: center; justify-content: space-between;">
+              <label style="margin: 0;">Daily Cap per Operator</label>
+              <input type="number" id="settingDailyCap" value="40" style="width: 90px; text-align: right;">
+            </div>
+            <div class="form-group" style="display: flex; align-items: center; justify-content: space-between;">
+              <label style="margin: 0;">Min Delay (sec)</label>
+              <input type="number" id="settingMinDelay" value="30" style="width: 90px; text-align: right;">
+            </div>
+            <div class="form-group" style="display: flex; align-items: center; justify-content: space-between;">
+              <label style="margin: 0;">Max Delay (sec)</label>
+              <input type="number" id="settingMaxDelay" value="120" style="width: 90px; text-align: right;">
+            </div>
+            <button class="btn" style="width: 100%; margin-top: 16px;" id="saveSettingsBtn">Save Settings</button>
+          </div>
+
+          <!-- Custom Voice Profiles -->
+          <div class="card">
+            <div class="card-title" style="display: flex; align-items: center; gap: 8px;">
+              AI Voice Profiles
+              <span class="info-bubble" data-tooltip="Paste 3–5 examples of your own writing to extract a custom voice profile. LinkBound uses this profile to generate messages that sound like you, not a robot.">?</span>
+            </div>
+            <div class="hint" style="margin-bottom: 24px;">Paste 3–5 examples of your writing to generate a reusable voice profile.</div>
+            <div class="form-group">
+              <label>Profile Name</label>
+              <input type="text" id="voiceName" placeholder="e.g. Aggressive Sales">
+            </div>
+            <div class="form-group">
+              <label>Examples (one per line)</label>
+              <textarea id="voiceExamples" placeholder="Hey {first_name}, wanted to reach out..."></textarea>
+            </div>
+            <button class="btn primary" id="btnTrainVoice">Train AI Voice</button>
+            <div id="voiceResult" style="margin-top: 24px; display: none;">
+              <label>Extracted System Prompt</label>
+              <textarea id="voiceSystemPrompt" readonly style="font-family: var(--font-mono); font-size: 0.8rem;"></textarea>
+            </div>
+          </div>
+
+          <!-- Sessions -->
+          <div class="card" style="grid-column: span 2;">
+            <div class="card-title" style="display: flex; align-items: center; gap: 8px;">
+              Sessions (Operators)
+              <span class="info-bubble" data-tooltip="Each Session corresponds to one LinkedIn account. Sessions are fully isolated — separate Chrome profile, login cookies, dedup history, and rate limits. You can run multiple sessions concurrently without crossover.">?</span>
+            </div>
+            <div class="hint" style="margin-bottom: 24px;">Create one session per LinkedIn account you manage. On first run, a Chrome window opens for login. After that, the session persists automatically.</div>
+
+            <div class="sessions-create-row">
+              <input type="text" id="newOpName" placeholder="Full name (e.g. Alex Johnson)" style="flex-grow: 1;">
+              <button class="btn primary" id="btnCreateOp">Add Session</button>
+            </div>
+
+            <div class="table-wrapper" style="margin-top: 24px;">
+              <table id="opsTable">
+                <thead>
+                  <tr>
+                    <th>Key</th>
+                    <th>Display Name</th>
+                    <th>Browser Profile</th>
+                    <th>Created</th>
+                    <th style="width: 120px;">Actions</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+
+            <div class="hint sessions-help">
+              <strong>ℹ️ How sessions work:</strong>
+              Each session stores a separate Chrome profile under <code>profiles/&lt;key&gt;/</code> in your LinkBound folder.
+              Deleting a session removes it from the dropdown but preserves the profile folder and its login state —
+              you can re-add it later by creating a session with the same name.
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Tooltip -->
+  <div id="tooltip" class="tooltip"></div>
+
+  <!-- Toasts -->
+  <div id="toastContainer"></div>
+
+  <script src="/static/app.js"></script>
+  <script>
+    lucide.createIcons();
+  </script>
+</body>
+</html>
