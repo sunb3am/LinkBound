@@ -584,7 +584,7 @@ async def require_api_key(x_api_key: str = Header(default="")) -> str:
 
 
 @app.get("/api/v1/health")
-async def v1_health(_key: str = Depends(require_api_key)):
+async def v1_health():
     return {"ok": True, "version": app.version, "busy": orchestrator.is_busy()}
 
 
