@@ -40,15 +40,6 @@ The script builds your virtual environment, installs the dependencies (`requirem
 5. In `config.yaml`, add your name under `operators`.
 6. On your first run, Chrome will open. Log into LinkedIn, clear any 2FA, and the session saves persistently.
 
-## Deploying to Railway
-
-If you want to host this for your team, the repository is configured for Railway out of the box.
-
-1. Push this repo to GitHub.
-2. Connect the repo in Railway.
-3. Railway automatically detects the `Dockerfile` and `railway.json`.
-4. **Crucial Step:** Attach a Volume to `/app/data` in the Railway dashboard. This ensures your SQLite database and persistent browser profiles survive server restarts.
-
 ## A Note on Safety
 
 LinkedIn aggressively monitors automation. We built LinkBound to protect the sender account. The default daily cap is 22 profiles. The engine inserts randomized human delays between actions. Do not push this to 100+ requests a day. Quality outreach will always outperform raw volume.
