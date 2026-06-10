@@ -1,5 +1,7 @@
 # LinkBound: Outbound Intelligence
 
+![LinkBound](LinkBound.png)
+
 LinkBound is a localized control center for managing LinkedIn outreach. We built it to solve a specific problem: most automation tools act like spam cannons that jeopardize account safety. LinkBound runs locally on your own machine using your own Chrome profile. It navigates LinkedIn the way a human does, enforcing hard safety limits while using AI to personalize notes based on the prospect's actual profile.
 
 ## What It Actually Does
