@@ -1,4 +1,4 @@
-# LinkBound: Outbound Intelligence
+# LinkBound: Outbound Automation
 
 ![LinkBound](LinkBound.png)
 
