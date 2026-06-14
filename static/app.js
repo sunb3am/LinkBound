@@ -7,6 +7,7 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 const state = {
   uploadId: null,
   operator: null,
+  activeView: "campaigns",
   config: null,
   inputMode: "csv",
   templates: [],
@@ -53,6 +54,10 @@ function esc(str) {
 function badge(status) {
   const label = (status || "").replace(/_/g, " ");
   return `<span class="badge ${status}">${label}</span>`;
+}
+
+function formatDateTime(value) {
+  return value ? new Date(value).toLocaleString() : "";
 }
 
 function showToast(message, type = "success") {
@@ -128,14 +133,21 @@ $$(".nav-item").forEach(item => {
   item.addEventListener("click", () => gotoView(item.dataset.view));
 });
 
-function gotoView(viewName) {
+function gotoView(viewName, { persist = true } = {}) {
+  const panel = $(`#view-${viewName}`);
+  if (!panel) viewName = "campaigns";
+
   $$(".nav-item").forEach(i => i.classList.remove("active"));
   $$(".view-panel").forEach(p => p.classList.remove("active"));
 
   const navItem = document.querySelector(`.nav-item[data-view="${viewName}"]`);
   if (navItem) navItem.classList.add("active");
-  const panel = $(`#view-${viewName}`);
-  if (panel) panel.classList.add("active");
+  const activePanel = $(`#view-${viewName}`);
+  if (activePanel) activePanel.classList.add("active");
+  state.activeView = viewName;
+  if (persist) {
+    localStorage.setItem("lb_active_view", viewName);
+  }
 
   const labels = {
     campaigns: "Campaigns",
@@ -153,9 +165,15 @@ function gotoView(viewName) {
   if (viewName === "batches")   loadBatches();
   if (viewName === "analytics") loadAnalytics();
   if (viewName === "settings")  loadOperators();
+  if (viewName === "run")       refreshRunStatus();
 
   // Re-attach tooltips for dynamically added elements
   attachTooltips();
+}
+
+function restoreActiveView() {
+  const saved = localStorage.getItem("lb_active_view") || "campaigns";
+  gotoView(saved, { persist: false });
 }
 
 // ─── Config Boot ───────────────────────────────────────────────────────────
@@ -665,6 +683,7 @@ $("#globalStopBtn").addEventListener("click", async () => {
 function connectWS() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => refreshRunStatus();
   ws.onmessage = (msg) => {
     const ev = JSON.parse(msg.data);
     switch (ev.type) {
@@ -690,6 +709,7 @@ function connectWS() {
 }
 
 function applyState(s) {
+  if (!s) return;
   const label = s.replace(/_/g, " ");
   const el = $("#runStateLabel");
   el.textContent = label.charAt(0).toUpperCase() + label.slice(1);
@@ -700,6 +720,23 @@ function applyState(s) {
   pBtn.disabled = !(running || paused);
   pBtn.textContent = paused ? "Resume" : "Pause";
   $("#globalStopBtn").disabled = !(running || paused || s === "waiting_login");
+}
+
+async function refreshRunStatus() {
+  try {
+    const snapshot = await api("/api/status");
+    applyState(snapshot.state || "idle");
+    applyTotals(snapshot.totals || {});
+    if (snapshot.message) {
+      $("#runMessage").textContent = snapshot.message;
+    } else if (snapshot.current?.linkedin_url) {
+      $("#runMessage").textContent = `Processing ${snapshot.current.full_name || snapshot.current.linkedin_url}...`;
+    } else {
+      $("#runMessage").textContent = snapshot.state ? snapshot.state.replace(/_/g, " ") : "Idle";
+    }
+  } catch (e) {
+    // WebSocket events will retry independently; keep the UI responsive.
+  }
 }
 
 function applyTotals(t) {
@@ -769,6 +806,7 @@ $("#btnExportCsv")?.addEventListener("click", () => {
 
 // ─── Batches ───────────────────────────────────────────────────────────────
 let batchesGridApi = null;
+let selectedBatchId = null;
 
 async function loadBatches() {
   const data = await api("/api/batches?limit=50");
@@ -786,20 +824,112 @@ async function loadBatches() {
         { field: "failed",     headerName: "Failed",   width: 80 },
         { field: "status",     headerName: "Status",   flex: 1, cellRenderer: p => badge(p.value) },
         { field: "started_at", headerName: "Started",
-          valueFormatter: p => p.value ? new Date(p.value).toLocaleString() : "",
+          valueFormatter: p => formatDateTime(p.value),
           flex: 1.5 },
+        { headerName: "Details", width: 110, sortable: false, filter: false,
+          cellRenderer: () => `<button class="btn tiny">View</button>` },
       ],
       defaultColDef: { sortable: true, resizable: true },
       pagination: true,
       paginationPageSize: 15,
+      rowSelection: "single",
+      onRowClicked: event => selectBatch(event.data),
     };
     batchesGridApi = agGrid.createGrid($("#batchesGrid"), gridOptions);
   } else {
     batchesGridApi.setGridOption("rowData", data.batches || []);
   }
+
+  if (selectedBatchId) {
+    const stillVisible = (data.batches || []).some(b => b.id === selectedBatchId);
+    if (stillVisible) loadBatchDetail(selectedBatchId);
+  }
 }
 
 $("#batchesRefresh").addEventListener("click", loadBatches);
+
+function selectBatch(batch) {
+  if (!batch || !batch.id) return;
+  selectedBatchId = batch.id;
+  loadBatchDetail(batch.id);
+}
+
+async function loadBatchDetail(batchId) {
+  const card = $("#batchDetailCard");
+  card.innerHTML = `<div class="batch-detail-empty">Loading batch details...</div>`;
+  try {
+    const data = await api(`/api/batches/${batchId}`);
+    renderBatchDetail(data.batch, data.requests || []);
+  } catch (err) {
+    card.innerHTML = `<div class="batch-detail-empty error">Could not load batch details: ${esc(err.message)}</div>`;
+  }
+}
+
+function renderBatchDetail(batch, requests) {
+  const card = $("#batchDetailCard");
+  const failed = requests.filter(r => (r.status || "").startsWith("failed")).length;
+  const flagged = requests.filter(r => r.status === "mismatch_flagged" || r.status === "needs_attention").length;
+
+  card.innerHTML = `
+    <div class="batch-detail-header">
+      <div>
+        <div class="card-title" style="margin-bottom: 4px;">${esc(batch.name || batch.public_id || "Batch Details")}</div>
+        <div class="batch-detail-meta">
+          ${esc(batch.public_id || "")}
+          ${batch.operator ? ` · ${esc(batch.operator)}` : ""}
+          ${batch.started_at ? ` · ${esc(formatDateTime(batch.started_at))}` : ""}
+        </div>
+      </div>
+      <div class="batch-detail-summary">
+        <span>${requests.length} profiles</span>
+        <span>${failed} failed</span>
+        <span>${flagged} flagged</span>
+      </div>
+    </div>
+    <div class="batch-request-list">
+      ${requests.length ? requests.map(renderBatchRequest).join("") : `
+        <div class="batch-detail-empty">No per-profile records were saved for this batch.</div>
+      `}
+    </div>
+  `;
+}
+
+function renderBatchRequest(req) {
+  const trace = Array.isArray(req.decision_trace) ? req.decision_trace : [];
+  const traceHtml = trace.length
+    ? `<details class="request-trace">
+         <summary>Decision trace (${trace.length})</summary>
+         <ol>${trace.map(step => `<li>${esc(String(step))}</li>`).join("")}</ol>
+       </details>`
+    : "";
+  const screenshot = req.screenshot_path
+    ? `<a class="request-link" href="/api/screenshot?path=${encodeURIComponent(req.screenshot_path)}" target="_blank" rel="noopener noreferrer">Screenshot</a>`
+    : "";
+  const name = req.full_name || req.linkedin_url || req.public_id;
+  const url = req.linkedin_url
+    ? `<a class="request-link" href="${esc(req.linkedin_url)}" target="_blank" rel="noopener noreferrer">Open profile</a>`
+    : "";
+
+  return `
+    <div class="batch-request">
+      <div class="batch-request-main">
+        <div class="feed-head">
+          <span class="feed-who">${esc(name)}</span>
+          ${req.company_csv ? `<span class="feed-co">${esc(req.company_csv)}</span>` : ""}
+          ${req.action_executed ? `<span class="feed-act">${esc(req.action_executed.replace(/_/g, " "))}</span>` : ""}
+          ${badge(req.status)}
+        </div>
+        <div class="request-detail">${esc(req.detail || "No detail recorded.")}</div>
+        <div class="request-links">
+          ${url}
+          ${screenshot}
+          ${req.created_at ? `<span>${esc(formatDateTime(req.created_at))}</span>` : ""}
+        </div>
+        ${traceHtml}
+      </div>
+    </div>
+  `;
+}
 
 // ─── Analytics ─────────────────────────────────────────────────────────────
 let chartInstance = null;
@@ -1031,6 +1161,16 @@ document.addEventListener("keydown", (e) => {
 })();
 
 // ─── Boot ──────────────────────────────────────────────────────────────────
-loadConfig().catch(e => showToast("Failed to load config: " + e.message, "error"));
-loadTemplatesData().catch(() => {});
-connectWS();
+async function boot() {
+  try {
+    await loadConfig();
+  } catch (e) {
+    showToast("Failed to load config: " + e.message, "error");
+  }
+  loadTemplatesData().catch(() => {});
+  restoreActiveView();
+  connectWS();
+  refreshRunStatus();
+}
+
+boot();

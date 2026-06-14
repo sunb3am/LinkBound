@@ -535,6 +535,7 @@ textarea {
 }
 .btn.ghost:hover:not(:disabled) { background: rgba(0,0,0,0.04); transform: none; }
 .btn.small { padding: 7px 16px; font-size: 0.82rem; }
+.btn.tiny { padding: 4px 10px; font-size: 0.72rem; min-height: auto; }
 .btn.icon-btn { padding: 8px; min-width: 36px; }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shadow: none; }
 
@@ -778,6 +779,98 @@ textarea {
   padding: 2px 7px;
   border-radius: 4px;
   letter-spacing: 0.04em;
+}
+
+/* ══════════════════════════════════════ BATCH DETAILS ══ */
+.batch-detail-card {
+  margin-top: 24px;
+  min-height: 220px;
+}
+.batch-detail-empty {
+  color: var(--text-faint);
+  font-size: 0.95rem;
+  padding: 18px 0;
+}
+.batch-detail-empty.error {
+  color: var(--accent-coral);
+}
+.batch-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.batch-detail-meta,
+.batch-detail-summary,
+.request-links {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-faint);
+}
+.batch-detail-summary {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.batch-detail-summary span {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  padding: 4px 9px;
+  background: rgba(0,0,0,0.02);
+}
+.batch-request-list {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.batch-request {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(255,255,255,0.28);
+}
+.batch-request:last-child {
+  border-bottom: none;
+}
+.request-detail {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.request-links {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.request-link {
+  font-weight: 700;
+}
+.request-trace {
+  margin-top: 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(0,0,0,0.025);
+  padding: 8px 10px;
+}
+.request-trace summary {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--accent-green);
+  font-weight: 700;
+}
+.request-trace ol {
+  margin: 8px 0 0 18px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+.request-trace li {
+  margin-bottom: 5px;
+  overflow-wrap: anywhere;
 }
 
 /* ══════════════════════════════════════ TABLES ══ */

@@ -68,13 +68,28 @@ class OrchestratorManager:
     def __init__(self, settings):
         self.settings = settings
         self.orchestrators: dict[str, Orchestrator] = {}
+        self._subscribers: set[asyncio.Queue] = set()
 
     def get(self, operator: str) -> Orchestrator:
         if operator not in self.orchestrators:
             o = Orchestrator(self.settings)
             o.gemini = gemini
+            for q in self._subscribers:
+                o._subscribers.add(q)
             self.orchestrators[operator] = o
         return self.orchestrators[operator]
+
+    def subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue(maxsize=400)
+        self._subscribers.add(q)
+        for o in self.orchestrators.values():
+            o._subscribers.add(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        self._subscribers.discard(q)
+        for o in self.orchestrators.values():
+            o.unsubscribe(q)
 
     def snapshot(self) -> dict:
         # Return the snapshot of the first busy orchestrator, or default
@@ -553,10 +568,7 @@ async def screenshot(path: str):
 @app.websocket("/ws")
 async def ws(websocket: WebSocket):
     await websocket.accept()
-    # Subscribe to all orchestrators (or the default one)
-    # For a simple approach, we'll just subscribe to the default orchestrator 
-    # created at boot time so the dashboard works.
-    queue = orchestrator.subscribe()
+    queue = manager.subscribe()
     await websocket.send_json(manager.snapshot())
     try:
         while True:
@@ -567,7 +579,7 @@ async def ws(websocket: WebSocket):
     except Exception:
         pass
     finally:
-        orchestrator.unsubscribe(queue)
+        manager.unsubscribe(queue)
 
 
 # ---- programmatic API (Phase 3) -------------------------------------------

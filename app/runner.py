@@ -130,6 +130,8 @@ class LinkedInRunner:
         gemini=None,
         ai_personalize: bool = False,
         ai_voice: str = "auto",
+        custom_gemini_key: str | None = None,
+        custom_gemini_model: str | None = None,
     ) -> ProfileResult:
         page = self._require_page()
         url = job["linkedin_url"]
@@ -211,8 +213,8 @@ class LinkedInRunner:
                 and message.strip()):
             message = await self._ai_personalize(
                 gemini, job, state, executed, message, trace, ai_voice,
-                custom_gemini_key=kwargs.get("custom_gemini_key"),
-                custom_gemini_model=kwargs.get("custom_gemini_model"),
+                custom_gemini_key=custom_gemini_key,
+                custom_gemini_model=custom_gemini_model,
             )
 
         # 3. Dry run: stop before any send.

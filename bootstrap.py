@@ -34,6 +34,24 @@ def run(cmd: list[str]) -> None:
     subprocess.check_call(cmd)
 
 
+def run_until_stopped(cmd: list[str]) -> None:
+    """Run the dashboard until it exits or the user presses Ctrl+C."""
+    print("+", " ".join(str(c) for c in cmd))
+    process = subprocess.Popen(cmd)
+    try:
+        process.wait()
+    except KeyboardInterrupt:
+        print("\nStopping the dashboard...")
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            print("Dashboard did not stop cleanly; forcing shutdown.")
+            process.kill()
+            process.wait()
+        print("Dashboard stopped.")
+
+
 def ensure_setup() -> None:
     py = venv_python()
     if not py.exists():
@@ -69,8 +87,11 @@ def main() -> None:
         print("\nSetup complete. Start the dashboard with:\n    python bootstrap.py")
         return
     print("\nStarting the dashboard (Ctrl+C to stop)...\n")
-    run([str(venv_python()), str(ROOT / "run.py")])
+    run_until_stopped([str(venv_python()), str(ROOT / "run.py")])
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
