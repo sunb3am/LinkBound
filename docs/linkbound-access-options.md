@@ -1,6 +1,6 @@
 # LinkBound access options
 
-Status: researched options for the Linode pilot and production access. No access provider has been selected for production.
+Status: access decision made 2026-09-23. Use Tailscale Serve for the LinkBound UI and TigerVNC Xvnc plus noVNC for the server browser view. Other options below remain comparison material.
 
 ## The actual use case
 
@@ -21,14 +21,14 @@ Status: researched options for the Linode pilot and production access. No access
 | Identity-aware web proxy, such as Cloudflare Access plus Tunnel | Open a normal HTTPS URL and complete a browser login | Browser-only access, identity policy before requests reach the app, no inbound application port on the VM when using Tunnel | Requires a domain, DNS/provider setup, identity policy, and a running tunnel; the provider is in the access path |
 | Public HTTPS reverse proxy plus LinkBound login | Open a normal HTTPS URL and log in to LinkBound | Direct control with no VPN or external access proxy | Publicly reachable login and API surface; we own MFA, rate limits, secure sessions, patching, and incident response |
 
-No ingress option removes LinkBound's need to authorize its own run controls, files, exports, WebSockets, and service API. An identity-aware proxy is an outer gate; LinkBound still needs an account-aware application session and service credentials.
+No ingress option removes LinkBound's need to authorize its own run controls, files, exports, WebSockets, and service API. LinkBound can use the verified Tailscale Serve identity for its one human owner, while service calls need a separate credential.
 
 ## 2. How the owner sees the actual server Chrome window
 
 | Option | How it works | Fit |
 | --- | --- | --- |
-| Linode Glish | Cloud Manager shows the VM's VGA desktop in a browser | First thing to try in the pilot. It adds no VNC service, but needs a lightweight desktop and display manager, and Glish has no clipboard. We must prove the automation launches Chrome on that same display. |
-| TigerVNC Xvnc plus noVNC | Xvnc provides a virtual X display and VNC server; noVNC renders it in a normal browser | Best fallback when Glish is awkward or when a direct browser-view URL and clipboard are needed. Use SSH forwarding in the pilot; protect any production endpoint separately. |
+| Linode Glish | Cloud Manager shows the VM's VGA desktop in a browser | Emergency console if the normal display or remote view fails. It has no clipboard and may not show the Xvnc display used by automation. |
+| TigerVNC Xvnc plus noVNC | Xvnc provides a virtual X display and VNC server; noVNC renders it in a normal browser | Selected. The browser worker opens Chrome on this display; noVNC shows the same display through a separate Tailscale Serve endpoint. |
 | Xvfb plus a VNC sharing server | Xvfb provides the display; a separate process shares it | Established headed-browser pattern, but more components than Xvnc when interactive viewing is required. |
 | Native VNC client over SSH or VPN | A desktop VNC application connects to the same display | Simple transport when a native client is acceptable; less convenient than noVNC. |
 | RDP desktop, optionally through Apache Guacamole | A Linux desktop is served over RDP; Guacamole makes it browser-accessible | Useful for general remote workstation access or many desktops. It may open a different session from the automation browser, and adds services to manage. |
@@ -36,11 +36,13 @@ No ingress option removes LinkBound's need to authorize its own run controls, fi
 
 The display choice and the access path are independent. For example, Xvnc plus noVNC can be viewed through an SSH tunnel, a mesh VPN, or an identity-aware HTTPS proxy. A screenshot or Playwright trace helps diagnose a job but is not a substitute for interactive login or challenge handling. Raw VNC and Chrome DevTools ports should not be public.
 
-## Recommended decision sequence
+## Selected setup
 
-1. **Phase 0:** Try Linode Glish with a lightweight desktop and one persistent Chrome profile. Verify a non-root Playwright worker launches a headed Chrome window visible in Glish, that manual login survives restart, and that the owner can recover a challenge. Glish's lack of clipboard is an explicit usability check. If it fails or is too awkward, use Xvnc plus noVNC bound to localhost and reach it through an SSH tunnel. Neither path requires Tailscale.
-2. **Production CRM access:** If opening LinkBound from an ordinary browser without installed client software is important, favor an identity-aware HTTPS proxy. Cloudflare Access plus Tunnel is one concrete implementation, subject to the owner's domain and provider preference. If access should be restricted to enrolled devices instead, Tailscale Serve is simpler than operating WireGuard directly. A public reverse proxy plus app login is viable only after LinkBound's authentication work is complete and reviewed.
-3. **Production browser access:** Keep Glish if it proves comfortable for occasional interventions. Add noVNC behind a separately protected URL only if frequent manual access or a direct LinkBound-to-browser link justifies it. Manual control must pause scheduled work and hold the account profile lock.
+1. **Pilot and production use the same access pattern:** Enroll Linode and the owner's devices in the tailnet. Run Tailscale Serve in persistent background mode for two private HTTPS endpoints, for example the LinkBound app on 443 and the noVNC viewer on 8443. Apply tailnet grants to the owner and approved devices. Do not enable Funnel for either endpoint.
+2. **The browser display is Xvnc:** Run Xvnc under a non-root service account. Point the Playwright worker's `DISPLAY` at it and run noVNC with websockify against its local VNC socket. Bind the app, websockify, and raw VNC listeners to loopback; expose no public app, VNC, or Chrome debugging port. Use a VNC password as a second check for desktop control.
+3. **Manual control is coordinated:** The viewer observes the actual worker display. Before taking control of an account profile, pause that account's scheduled work, wait for the active browser operation to finish, and hold its profile lock. Do not launch a second Chrome process against the same profile. Glish remains a VM recovery console, not the normal LinkedIn browser viewer.
+
+Tailscale simplifies private access, but the app still has to authorize sensitive UI actions and API calls. For the one human owner, an allowlist of Tailscale Serve identity headers can avoid a second login while the backend listens only on loopback. Service-to-service calls use a separate scoped credential; tagged devices do not receive Tailscale user identity headers. These rules apply to HTTP, WebSocket, exports, file downloads, and run controls.
 
 The hosted browser pilot decides whether Linode is a suitable LinkedIn worker. None of these display or ingress methods guarantees that LinkedIn will treat the new VM, IP, or browser environment like the current local setup. If the hosted pilot fails, an always-on local worker is a separate fallback; it is not solved by changing the remote-access method.
 
