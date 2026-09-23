@@ -3,9 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from .orchestrator import Orchestrator
+
+
+@dataclass
+class _InboundActivity:
+    operator: str
+    started_at: str
+
+    def snapshot(self) -> dict:
+        return {"state": "syncing", "operator": self.operator,
+                "started_at": self.started_at, "totals": {}, "current": {}}
 
 
 class RunCoordinator:
@@ -15,6 +27,7 @@ class RunCoordinator:
         self.factory = factory
         self.orchestrators: dict[str, Orchestrator] = {}
         self._subscribers: set[asyncio.Queue] = set()
+        self._inbound_activity: _InboundActivity | None = None
 
     def get(self, operator: str) -> Orchestrator:
         if operator not in self.orchestrators:
@@ -25,8 +38,22 @@ class RunCoordinator:
             self.orchestrators[operator] = orch
         return self.orchestrators[operator]
 
-    def active(self) -> Orchestrator | None:
-        return next((o for o in self.orchestrators.values() if o.is_busy()), None)
+    def active(self) -> Orchestrator | _InboundActivity | None:
+        return self._inbound_activity or next(
+            (o for o in self.orchestrators.values() if o.is_busy()), None
+        )
+
+    async def run_inbound(self, operator: str, operation) -> Any:
+        """Give one no-send collector exclusive ownership of the browser profile."""
+        if self.active() is not None:
+            raise RuntimeError("A browser operation is already in progress.")
+        self._inbound_activity = _InboundActivity(
+            operator=operator, started_at=datetime.now(timezone.utc).isoformat()
+        )
+        try:
+            return await operation()
+        finally:
+            self._inbound_activity = None
 
     async def start(self, operator: str, jobs: list[dict], **kwargs: Any) -> Orchestrator:
         if not kwargs.get("dry_run", False) and not self.settings.allow_live_sends:
@@ -57,6 +84,8 @@ class RunCoordinator:
             orch.unsubscribe(queue)
 
     def snapshot(self, operator: str | None = None) -> dict:
+        if self._inbound_activity and (operator is None or operator == self._inbound_activity.operator):
+            return self._inbound_activity.snapshot()
         if operator:
             return self.get(operator).snapshot()
         active = self.active()

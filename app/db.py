@@ -1,15 +1,10 @@
-"""SQLite persistence: contact memory, batches, per-request audit trail, and the
-template library.
+"""SQLite persistence for outbound history, queued campaigns, and inbox observations.
 
 Thread-safe via a module-level lock; the orchestrator runs on the event loop
 while FastAPI handlers also read. Every access is guarded by ``_LOCK``.
 
-Schema (v2):
-  contacts            permanent dedup memory across all batches
-  batches             one outbound run ("Jun 1 2026 - 2pm - 30 profiles")
-  outbound_requests   one row per processed profile, with a unique public id and
-                      a JSON decision_trace (the "thought trace")
-  templates           the editable message-template library
+Migrations advance PRAGMA user_version. Account-scoped facts remain distinct
+from the shared contact profile and immutable outbound request history.
 """
 
 from __future__ import annotations
@@ -212,6 +207,7 @@ def init_db(db_path: Path) -> None:
             _migrate_campaign_queue(_CONN)
             _migrate_outreach_uncertainties(_CONN)
             _migrate_campaign_pause_reason(_CONN)
+            _migrate_inbound_sync(_CONN)
             _CONN.execute("CREATE INDEX IF NOT EXISTS idx_requests_normalized_status ON outbound_requests(normalized_linkedin_url, status)")
             _CONN.execute("CREATE INDEX IF NOT EXISTS idx_contacts_normalized_url ON contacts(normalized_linkedin_url)")
             _CONN.commit()
@@ -371,6 +367,88 @@ def _migrate_campaign_pause_reason(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA user_version = 5")
 
 
+def _migrate_inbound_sync(conn: sqlite3.Connection) -> None:
+    """Add durable, account-scoped inbox observations as schema version 6."""
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if version >= 6:
+        return
+    statements = (
+        """CREATE TABLE sync_runs (
+            id INTEGER PRIMARY KEY,
+            operator TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            expected_sections_json TEXT NOT NULL DEFAULT '[]',
+            coverage_json TEXT NOT NULL DEFAULT '{}',
+            error TEXT NOT NULL DEFAULT ''
+        )""",
+
+        """CREATE TABLE conversations (
+            id INTEGER PRIMARY KEY,
+            operator TEXT NOT NULL,
+            thread_key TEXT NOT NULL,
+            contact_url TEXT,
+            participant_name TEXT NOT NULL DEFAULT '',
+            section TEXT NOT NULL DEFAULT '',
+            preview_text TEXT NOT NULL DEFAULT '',
+            linkedin_unread INTEGER,
+            match_state TEXT NOT NULL DEFAULT 'unmatched',
+            first_observed_at TEXT NOT NULL,
+            last_observed_at TEXT NOT NULL,
+            reviewed_at TEXT,
+            UNIQUE(operator, thread_key)
+        )""",
+
+        """CREATE TABLE messages (
+            id INTEGER PRIMARY KEY,
+            conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+            source_key TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            source_at TEXT,
+            first_observed_at TEXT NOT NULL,
+            last_observed_at TEXT NOT NULL,
+            UNIQUE(conversation_id, source_key)
+        )""",
+
+        """CREATE TABLE attachments (
+            id INTEGER PRIMARY KEY,
+            message_id INTEGER NOT NULL REFERENCES messages(id),
+            source_key TEXT NOT NULL,
+            filename TEXT NOT NULL DEFAULT '',
+            mime_type TEXT NOT NULL DEFAULT '',
+            size_bytes INTEGER,
+            sha256 TEXT,
+            relative_path TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            observed_at TEXT NOT NULL,
+            UNIQUE(message_id, source_key)
+        )""",
+
+        """CREATE TABLE relationship_observations (
+            id INTEGER PRIMARY KEY,
+            operator TEXT NOT NULL,
+            contact_url TEXT NOT NULL,
+            fact TEXT NOT NULL,
+            source TEXT NOT NULL,
+            first_observed_at TEXT NOT NULL,
+            last_observed_at TEXT NOT NULL,
+            UNIQUE(operator, contact_url, fact, source)
+        )""",
+
+        "CREATE INDEX idx_sync_runs_operator_latest ON sync_runs(operator, started_at DESC, id DESC)",
+        "CREATE INDEX idx_conversations_operator_latest ON conversations(operator, last_observed_at DESC, id DESC)",
+        "CREATE INDEX idx_messages_conversation_latest ON messages(conversation_id, source_at DESC, id DESC)",
+        "CREATE INDEX idx_attachments_message_latest ON attachments(message_id, observed_at DESC, id DESC)",
+        "CREATE INDEX idx_relationship_observations_operator_latest ON relationship_observations(operator, last_observed_at DESC, id DESC)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+    conn.execute("PRAGMA user_version = 6")
+
+
 def close_db() -> None:
     global _CONN
     with _LOCK:
@@ -441,10 +519,53 @@ def list_account_contacts(operator: str, search: str = "", limit: int = 500) -> 
                 (operator, limit),
             ).fetchall()
         results = [dict(row) for row in rows]
+        invited = {
+            row["normalized_linkedin_url"]: row["observed_at"]
+            for row in _conn().execute(
+                """SELECT normalized_linkedin_url, MAX(COALESCE(completed_at, created_at)) AS observed_at
+                   FROM outbound_requests WHERE operator=? AND status='sent'
+                     AND action_executed IN ('connect', 'connect_note')
+                   GROUP BY normalized_linkedin_url""", (operator,)
+            ).fetchall() if row["normalized_linkedin_url"]
+        }
+        connected = {
+            row["contact_url"]: row["observed_at"]
+            for row in _conn().execute(
+                """SELECT contact_url, MIN(first_observed_at) AS observed_at
+                   FROM relationship_observations WHERE operator=? AND fact='connected'
+                   GROUP BY contact_url""", (operator,)
+            ).fetchall()
+        }
+        replied = {
+            row["contact_url"]: row["observed_at"]
+            for row in _conn().execute(
+                """SELECT c.contact_url, MAX(COALESCE(m.source_at, m.first_observed_at)) AS observed_at
+                   FROM conversations c JOIN messages m ON m.conversation_id=c.id
+                   WHERE c.operator=? AND c.contact_url IS NOT NULL AND m.direction='inbound'
+                   GROUP BY c.contact_url""", (operator,)
+            ).fetchall()
+        }
+        received_files = {
+            row["contact_url"]: row["observed_at"]
+            for row in _conn().execute(
+                """SELECT c.contact_url, MAX(a.observed_at) AS observed_at
+                   FROM conversations c JOIN messages m ON m.conversation_id=c.id
+                   JOIN attachments a ON a.message_id=m.id
+                   WHERE c.operator=? AND c.contact_url IS NOT NULL AND m.direction='inbound'
+                     AND a.status='saved'
+                   GROUP BY c.contact_url""", (operator,)
+            ).fetchall()
+        }
         for result in results:
             result["has_successful_send"] = _has_successful_send(
                 _conn(), result["linkedin_url"], result["operator"]
             )
+            url = result["linkedin_url"]
+            result["invited_at"] = invited.get(url)
+            result["connected_at"] = connected.get(url)
+            result["accepted_at"] = connected.get(url) if url in invited else None
+            result["replied_at"] = replied.get(url)
+            result["file_received_at"] = received_files.get(url)
         return results
 
 
@@ -942,7 +1063,10 @@ def create_operator(key: str, label: str, profile_dir: str) -> None:
 def delete_operator(key: str) -> bool:
     with _LOCK:
         conn = _conn()
-        for table in ("batches", "outbound_requests", "account_contacts", "campaigns"):
+        for table in (
+            "batches", "outbound_requests", "account_contacts", "campaigns",
+            "sync_runs", "conversations", "relationship_observations",
+        ):
             if conn.execute(
                 f"SELECT 1 FROM {table} WHERE operator=? LIMIT 1", (key,)
             ).fetchone():

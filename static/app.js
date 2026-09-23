@@ -155,6 +155,7 @@ function gotoView(viewName, { persist = true } = {}) {
     templates: "Templates",
     run: "Live Run",
     crm: "Audience Manager",
+    inbox: "Inbox & Sync",
     analytics: "Analytics",
     batches: "Batch History",
     settings: "Settings",
@@ -163,6 +164,7 @@ function gotoView(viewName, { persist = true } = {}) {
 
   if (viewName === "templates") loadTemplates();
   if (viewName === "crm")       loadHistory();
+  if (viewName === "inbox")     loadInbox();
   if (viewName === "batches")   loadBatches();
   if (viewName === "scheduled") loadScheduledCampaigns();
   if (viewName === "analytics") loadAnalytics();
@@ -269,6 +271,7 @@ function updateOperatorWidget() {
 $("#operator").addEventListener("change", () => {
   updateOperatorWidget();
   if (state.activeView === "crm") loadHistory();
+  if (state.activeView === "inbox") loadInbox();
   if (state.activeView === "run") refreshRunStatus();
   if (state.activeView === "batches") loadBatches();
   if (state.activeView === "scheduled") loadScheduledCampaigns();
@@ -1120,6 +1123,14 @@ async function loadHistory() {
         { field: "full_name",     headerName: "Name",        filter: "agTextColumnFilter", flex: 2, cellClass: "cell-name" },
         { field: "company_csv",   headerName: "Company",     filter: "agTextColumnFilter", flex: 2 },
         { field: "last_observed_status", headerName: "Status", filter: "agSetColumnFilter", flex: 1, cellRenderer: p => badge(p.value || (p.data?.has_successful_send ? "sent" : "")) },
+        { field: "invited_at", headerName: "Invited", flex: 1,
+          valueFormatter: p => p.value ? formatDateTime(p.value) : "" },
+        { field: "accepted_at", headerName: "Accepted", flex: 1,
+          valueFormatter: p => p.value ? formatDateTime(p.value) : "" },
+        { field: "replied_at", headerName: "Replied", flex: 1,
+          valueFormatter: p => p.value ? formatDateTime(p.value) : "" },
+        { field: "file_received_at", headerName: "File received", flex: 1,
+          valueFormatter: p => p.value ? formatDateTime(p.value) : "" },
         { field: "linkedin_url",  headerName: "LinkedIn URL", flex: 2,
           cellRenderer: p => p.value ? `<a href="${esc(p.value)}" target="_blank" rel="noopener noreferrer" style="color: var(--accent-green); font-family: var(--font-mono); font-size: 0.78rem;">${esc(p.value.replace("https://www.linkedin.com/in/",""))}</a>` : "" },
         { field: "last_action_type", headerName: "Action",   flex: 1, cellRenderer: p => badge(p.value) },
@@ -1142,6 +1153,276 @@ $("#historyRefresh").addEventListener("click", loadHistory);
 $("#historySearch").addEventListener("keydown", (e) => { if (e.key === "Enter") loadHistory(); });
 $("#btnExportCsv")?.addEventListener("click", () => {
   if (crmGridApi) crmGridApi.exportDataAsCsv({ fileName: `linkbound-contacts-${new Date().toISOString().slice(0,10)}.csv` });
+});
+
+// ─── Inbox & Sync ─────────────────────────────────────────────────────────
+let inboxLoadSeq = 0;
+let inboxDetailSeq = 0;
+let inboxSelectedConversationId = null;
+let inboxConversations = [];
+let inboxTotal = 0;
+
+function renderInboxList() {
+  $("#inboxConversationCount").textContent = `${inboxConversations.length} of ${inboxTotal}`;
+  $("#inboxConversationList").innerHTML = inboxConversations.map(renderInboxConversation).join("");
+  $("#inboxLoadMore").hidden = inboxConversations.length >= inboxTotal;
+}
+
+function inboxQuery(operator) {
+  return `operator=${encodeURIComponent(operator)}`;
+}
+
+function inboxSafeLinkedInUrl(value) {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && /(^|\.)linkedin\.com$/i.test(url.hostname) ? url.href : "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function inboxCoverageHtml(coverage) {
+  if (!coverage || typeof coverage !== "object" || !Object.keys(coverage).length) {
+    return `<span class="inbox-coverage-empty">No section coverage recorded.</span>`;
+  }
+  return Object.entries(coverage).map(([section, item]) => {
+    item = item || {};
+    const counts = [`${Number(item.observed) || 0} observed`, `${Number(item.stored) || 0} saved`];
+    if (Number(item.unresolved) > 0) counts.push(`${Number(item.unresolved)} unresolved`);
+    const error = item.error ? `<span class="inbox-coverage-error">${esc(item.error)}</span>` : "";
+    return `<div class="inbox-coverage-item">
+      <span class="inbox-coverage-name">${esc(section.replace(/_/g, " "))}</span>
+      <span>${counts.map(esc).join(" · ")}</span>
+      <span class="inbox-status-text">${esc(item.status || "unknown")}</span>${error}
+    </div>`;
+  }).join("");
+}
+
+function renderInboxSync(runs) {
+  const summary = $("#inboxSyncHealth").querySelector(".inbox-sync-summary");
+  const coverage = $("#inboxSyncCoverage");
+  if (!runs.length) {
+    summary.innerHTML = `<strong>No inbox sync recorded yet.</strong><span>Run history will appear here after the first scan.</span>`;
+    coverage.innerHTML = "";
+    return;
+  }
+  const latest = [...runs].sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0))[0];
+  summary.innerHTML = `<strong>Latest sync: ${esc(latest.status || "unknown")}</strong>
+    <span>${latest.started_at ? `Started ${esc(formatDateTime(latest.started_at))}` : "Start time unavailable"}</span>
+    ${latest.finished_at ? `<span>Finished ${esc(formatDateTime(latest.finished_at))}</span>` : ""}`;
+  coverage.innerHTML = inboxCoverageHtml(latest.coverage);
+}
+
+function renderInboxConversation(conversation) {
+  const selected = String(conversation.id) === String(inboxSelectedConversationId);
+  const unread = !!conversation.linkedin_unread;
+  const readLabel = conversation.linkedin_unread == null ? "LinkedIn read state unknown" :
+    unread ? "LinkedIn unread" : "Read on LinkedIn";
+  const unmatched = conversation.match_state === "unmatched";
+  const ambiguous = conversation.match_state === "ambiguous";
+  const reviewed = !!conversation.reviewed_at;
+  const label = conversation.participant_name || "Unknown participant";
+  return `<button class="inbox-conversation${selected ? " selected" : ""}" type="button"
+      data-conversation-id="${esc(String(conversation.id))}" aria-pressed="${selected}">
+    <span class="inbox-conversation-top">
+      <span class="inbox-person">${esc(label)}</span>
+      ${unread ? `<span class="inbox-unread-dot" aria-label="Unread on LinkedIn" title="Unread on LinkedIn"></span>` : ""}
+    </span>
+    <span class="inbox-preview">${esc(conversation.preview_text || "No message preview")}</span>
+    <span class="inbox-row-meta">
+      <span class="inbox-label${unread ? " unread" : ""}">${readLabel}</span>
+      ${reviewed ? `<span class="inbox-label reviewed">Reviewed</span>` : `<span class="inbox-label pending-review">Needs review</span>`}
+      ${unmatched ? `<span class="inbox-label unmatched">Unmatched</span>` : ""}
+      ${ambiguous ? `<span class="inbox-label unmatched">Identity conflict</span>` : ""}
+      <span>${Number(conversation.message_count) || 0} messages</span>
+      ${Number(conversation.file_count) > 0 ? `<span>${Number(conversation.file_count)} files</span>` : ""}
+    </span>
+  </button>`;
+}
+
+async function loadInbox() {
+  const seq = ++inboxLoadSeq;
+  const operator = $("#operator").value;
+  if (!operator) return;
+  const list = $("#inboxConversationList");
+  list.innerHTML = `<div class="inbox-empty">Loading conversations…</div>`;
+  try {
+    const [runData, conversationData] = await Promise.all([
+      api(`/api/inbound/runs?${inboxQuery(operator)}`),
+      api(`/api/inbound/conversations?${inboxQuery(operator)}&limit=100&offset=0`),
+    ]);
+    if (seq !== inboxLoadSeq || operator !== $("#operator").value) return;
+    const runs = runData.runs || [];
+    const conversations = conversationData.conversations || [];
+    renderInboxSync(runs);
+    inboxConversations = conversations;
+    inboxTotal = Number(conversationData.total) || conversations.length;
+    renderInboxList();
+    if (!conversations.length) {
+      list.innerHTML = `<div class="inbox-empty">No conversations have been saved for this session.</div>`;
+      inboxSelectedConversationId = null;
+      $("#inboxConversationDetail").innerHTML = `<div class="inbox-detail-empty">Messages and files will appear here after an inbox scan.</div>`;
+      return;
+    }
+    const selectedStillExists = conversations.some(item => String(item.id) === String(inboxSelectedConversationId));
+    if (!selectedStillExists) inboxSelectedConversationId = conversations[0].id;
+    renderInboxList();
+    loadInboxDetail(inboxSelectedConversationId);
+  } catch (error) {
+    if (seq !== inboxLoadSeq) return;
+    list.innerHTML = `<div class="inbox-empty error" role="alert">Could not load inbox data: ${esc(error.message)}</div>`;
+    $("#inboxSyncHealth").querySelector(".inbox-sync-summary").textContent = "Sync status unavailable.";
+    $("#inboxSyncCoverage").innerHTML = "";
+    $("#inboxConversationDetail").innerHTML = `<div class="inbox-detail-empty">Select Refresh to try again.</div>`;
+  }
+}
+
+async function loadMoreInbox() {
+  const operator = $("#operator").value;
+  const button = $("#inboxLoadMore");
+  const seq = inboxLoadSeq;
+  button.disabled = true;
+  try {
+    const data = await api(`/api/inbound/conversations?${inboxQuery(operator)}&limit=100&offset=${inboxConversations.length}`);
+    if (seq !== inboxLoadSeq || operator !== $("#operator").value) return;
+    const known = new Set(inboxConversations.map(item => item.id));
+    inboxConversations.push(...(data.conversations || []).filter(item => !known.has(item.id)));
+    inboxTotal = Number(data.total) || inboxConversations.length;
+    renderInboxList();
+  } catch (error) {
+    showToast("Could not load more conversations: " + error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function loadInboxDetail(conversationId) {
+  const seq = ++inboxDetailSeq;
+  const operator = $("#operator").value;
+  const detail = $("#inboxConversationDetail");
+  if (!operator || !conversationId) return;
+  detail.innerHTML = `<div class="inbox-detail-empty">Loading conversation…</div>`;
+  try {
+    const data = await api(`/api/inbound/conversations/${encodeURIComponent(conversationId)}?${inboxQuery(operator)}`);
+    if (seq !== inboxDetailSeq || operator !== $("#operator").value) return;
+    renderInboxDetail(data.conversation);
+  } catch (error) {
+    if (seq !== inboxDetailSeq) return;
+    detail.innerHTML = `<div class="inbox-detail-empty error" role="alert">Could not load this conversation: ${esc(error.message)}</div>`;
+  }
+}
+
+function renderInboxDetail(conversation) {
+  if (!conversation) return;
+  const operator = $("#operator").value;
+  const id = String(conversation.id);
+  const participant = conversation.participant_name || "Unknown participant";
+  const safeUrl = inboxSafeLinkedInUrl(conversation.contact_url);
+  const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
+  const reviewed = !!conversation.reviewed_at;
+  const unmatched = conversation.match_state === "unmatched";
+  const ambiguous = conversation.match_state === "ambiguous";
+  const readLabel = conversation.linkedin_unread == null ? "LinkedIn read state unknown" :
+    conversation.linkedin_unread ? "LinkedIn unread" : "Read on LinkedIn";
+  const messageHtml = messages.length ? messages.map(message => {
+    const direction = String(message.direction || "unknown").toLowerCase();
+    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    return `<article class="inbox-message">
+      <div class="inbox-message-head">
+        <span>${esc(direction === "inbound" ? participant : direction === "outbound" ? "You" : direction)}</span>
+        ${message.source_at ? `<time datetime="${esc(message.source_at)}">${esc(formatDateTime(message.source_at))}</time>` : ""}
+      </div>
+      <div class="inbox-message-body">${esc(message.body || "[No text]")}</div>
+      ${attachments.length ? `<div class="inbox-attachments"><span>Files</span>${attachments.map(file => {
+        const fileUrl = `/api/inbound/files/${encodeURIComponent(file.id)}?${inboxQuery(operator)}`;
+        return file.status === "saved"
+          ? `<a href="${esc(fileUrl)}" download>${esc(file.filename || "Download file")}</a>`
+          : `<span class="inbox-file-status">${esc(file.filename || "File")} · ${esc(file.status || "not saved")}</span>`;
+      }).join("")}</div>` : ""}
+    </article>`;
+  }).join("") : `<div class="inbox-detail-empty">No saved messages are available for this conversation.</div>`;
+  $("#inboxConversationDetail").innerHTML = `
+    <header class="inbox-detail-header">
+      <div>
+        <h3>${esc(participant)}</h3>
+        <div class="inbox-detail-badges">
+          <span class="inbox-label${conversation.linkedin_unread ? " unread" : ""}">${readLabel}</span>
+          <span class="inbox-label${reviewed ? " reviewed" : " pending-review"}">${reviewed ? "Reviewed in LinkBound" : "Not reviewed in LinkBound"}</span>
+          ${unmatched ? `<span class="inbox-label unmatched">Unmatched contact</span>` : ambiguous ? `<span class="inbox-label unmatched">Identity conflict</span>` : `<span class="inbox-label">${esc(conversation.match_state || "Contact status unknown")}</span>`}
+        </div>
+        <div class="inbox-detail-meta">${conversation.last_observed_at ? `Last observed ${esc(formatDateTime(conversation.last_observed_at))}` : "Observation time unavailable"}</div>
+      </div>
+      ${safeUrl ? `<a class="btn small" href="${esc(safeUrl)}" target="_blank" rel="noopener noreferrer">Open LinkedIn</a>` : ""}
+    </header>
+    <div class="inbox-detail-actions">
+      <button class="btn small primary" id="inboxMarkReviewed" type="button" ${reviewed ? "disabled" : ""}>${reviewed ? "Reviewed" : "Mark reviewed"}</button>
+      ${unmatched || ambiguous ? `<form class="inbox-link-form" id="inboxLinkForm">
+        <label for="inboxContactUrl">Link to contact</label>
+        <input id="inboxContactUrl" type="url" inputmode="url" placeholder="https://www.linkedin.com/in/..." value="${esc(safeUrl)}" required>
+        <button class="btn small" type="submit">Link contact</button>
+      </form>` : ""}
+    </div>
+    <div class="inbox-message-list">${messageHtml}</div>
+  `;
+  $("#inboxMarkReviewed")?.addEventListener("click", () => markInboxReviewed(id));
+  $("#inboxLinkForm")?.addEventListener("submit", event => linkInboxContact(event, id));
+}
+
+async function markInboxReviewed(conversationId) {
+  const operator = $("#operator").value;
+  try {
+    await api(`/api/inbound/conversations/${encodeURIComponent(conversationId)}/review?${inboxQuery(operator)}`, { method: "POST" });
+    showToast("Conversation marked reviewed.");
+    await loadInbox();
+  } catch (error) {
+    showToast("Could not mark reviewed: " + error.message, "error");
+  }
+}
+
+async function linkInboxContact(event, conversationId) {
+  event.preventDefault();
+  const operator = $("#operator").value;
+  const contactUrl = inboxSafeLinkedInUrl($("#inboxContactUrl").value.trim());
+  if (!contactUrl) return showToast("Enter a valid LinkedIn profile URL.", "error");
+  const button = event.currentTarget.querySelector("button[type=submit]");
+  button.disabled = true;
+  try {
+    await api(`/api/inbound/conversations/${encodeURIComponent(conversationId)}/link?${inboxQuery(operator)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contact_url: contactUrl }),
+    });
+    showToast("Conversation linked to contact.");
+    await loadInbox();
+  } catch (error) {
+    showToast("Could not link contact: " + error.message, "error");
+    button.disabled = false;
+  }
+}
+
+$("#inboxRefresh")?.addEventListener("click", loadInbox);
+$("#inboxLoadMore")?.addEventListener("click", loadMoreInbox);
+$("#inboxExport")?.addEventListener("click", event => {
+  const operator = $("#operator").value;
+  if (!operator) {
+    event.preventDefault();
+    showToast("Select a LinkedIn session first.", "error");
+    return;
+  }
+  event.currentTarget.href = `/api/inbound/export?${inboxQuery(operator)}`;
+});
+$("#inboxConversationList")?.addEventListener("click", event => {
+  if (event.target.closest("a")) return;
+  const button = event.target.closest("button[data-conversation-id]");
+  if (!button) return;
+  inboxSelectedConversationId = button.dataset.conversationId;
+  $$("#inboxConversationList .inbox-conversation").forEach(item => {
+    const active = item.dataset.conversationId === inboxSelectedConversationId;
+    item.classList.toggle("selected", active);
+    item.setAttribute("aria-pressed", String(active));
+  });
+  loadInboxDetail(inboxSelectedConversationId);
 });
 
 // ─── Batches ───────────────────────────────────────────────────────────────

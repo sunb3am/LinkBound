@@ -71,3 +71,31 @@ def test_hosted_no_send_gate_is_enforced_below_http_routes():
         assert dry.busy
 
     asyncio.run(check())
+
+
+def test_inbound_scan_owns_browser_and_releases_it_after_failure():
+    coordinator = RunCoordinator(SimpleNamespace(allow_live_sends=True), object(), factory=FakeOrchestrator)
+
+    async def check():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def scan():
+            entered.set()
+            await release.wait()
+            raise ValueError("selector changed")
+
+        task = asyncio.create_task(coordinator.run_inbound("sender-a", scan))
+        await entered.wait()
+        assert coordinator.active().operator == "sender-a"
+        assert coordinator.snapshot()["state"] == "syncing"
+        with pytest.raises(RuntimeError, match="already in progress"):
+            await coordinator.start("sender-b", [], dry_run=True)
+        with pytest.raises(RuntimeError, match="already in progress"):
+            await coordinator.resolve_names("sender-b", [], mode="page")
+        release.set()
+        with pytest.raises(ValueError, match="selector changed"):
+            await task
+        assert coordinator.active() is None
+
+    asyncio.run(check())

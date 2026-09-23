@@ -190,6 +190,10 @@
           <div class="nav-icon"><i data-lucide="users"></i></div>
           <div>Audience Manager</div>
         </div>
+        <button class="nav-item nav-button" type="button" data-view="inbox" id="nav-inbox" aria-label="LinkedIn inbox sync">
+          <div class="nav-icon"><i data-lucide="inbox"></i></div>
+          <div>Inbox & Sync</div>
+        </button>
         <div class="nav-item" data-view="analytics" id="nav-analytics">
           <div class="nav-icon"><i data-lucide="bar-chart-2"></i></div>
           <div>Analytics</div>
@@ -585,6 +589,42 @@
         </div>
         <div class="card stagger-2" style="padding: 0; overflow: hidden; display: flex; flex-direction: column; height: 560px;">
           <div id="crmGrid" class="ag-theme-alpine" style="height: 100%; width: 100%;"></div>
+        </div>
+      </section>
+
+      <!-- ============================================================ INBOX & SYNC -->
+      <section id="view-inbox" class="view-panel animate-reveal" aria-labelledby="inboxHeading">
+        <div class="inbox-page-header">
+          <div>
+            <h2 id="inboxHeading">Inbox &amp; Sync</h2>
+            <p class="hint">Review messages and files observed from this LinkedIn session.</p>
+          </div>
+          <div class="inbox-header-actions">
+            <a class="btn small" id="inboxExport" href="#" download>Export account</a>
+            <button class="btn small" id="inboxRefresh" type="button" title="Refresh inbox data">
+              <i data-lucide="refresh-cw" style="width:14px;"></i> Refresh
+            </button>
+          </div>
+        </div>
+        <div class="inbox-sync-strip" id="inboxSyncHealth" aria-live="polite">
+          <div class="inbox-sync-summary">Loading sync history…</div>
+          <div class="inbox-sync-coverage" id="inboxSyncCoverage"></div>
+        </div>
+        <p class="inbox-sync-note">Browser scan is not active yet. This page shows saved observations and does not start a scan.</p>
+        <div class="inbox-layout">
+          <section class="inbox-list-panel" aria-label="Conversations">
+            <div class="inbox-list-heading">
+              <h3>Conversations</h3>
+              <span id="inboxConversationCount" class="inbox-count">—</span>
+            </div>
+            <div id="inboxConversationList" class="inbox-conversation-list" aria-live="polite">
+              <div class="inbox-empty">Loading conversations…</div>
+            </div>
+            <button class="btn small inbox-load-more" id="inboxLoadMore" type="button" hidden>Load more conversations</button>
+          </section>
+          <section class="inbox-detail-panel" aria-label="Selected conversation" aria-live="polite">
+            <div id="inboxConversationDetail" class="inbox-detail-empty">Select a conversation to read its saved messages and files.</div>
+          </section>
         </div>
       </section>
 

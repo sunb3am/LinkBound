@@ -17,7 +17,10 @@ def test_private_mode_guards_dashboard_api_and_static(tmp_path, monkeypatch):
     async def check():
         transport = httpx.ASGITransport(app=main.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            for path in ("/", "/api/config", "/static/app.js", "/api/v1/health"):
+            for path in ("/", "/api/config", "/static/app.js", "/api/v1/health",
+                         "/api/inbound/runs?operator=me",
+                         "/api/inbound/conversations?operator=me",
+                         "/api/inbound/export?operator=me"):
                 assert (await client.get(path)).status_code == 403
                 permitted = await client.get(
                     path, headers={"Tailscale-User-Login": "owner@example.com"}

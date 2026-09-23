@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware import Middleware
 
-from . import csv_ingest, db, voice as voicelib, campaigns, crm, analytics, export
+from . import csv_ingest, db, voice as voicelib, campaigns, crm, analytics, export, inbound, inbound_store
 from .queue_schedule import distribute_due_times
 from .queue_worker import queue_loop
 from .linkedin_urls import canonical_profile_url
@@ -67,6 +67,7 @@ settings.operators = {
 @asynccontextmanager
 async def app_lifespan(_app):
     db.mark_inflight_targets_uncertain()
+    inbound_store.mark_interrupted_runs()
     task = asyncio.create_task(queue_loop(manager, settings))
     try:
         yield
@@ -92,6 +93,7 @@ app.include_router(campaigns.router)
 app.include_router(crm.router)
 app.include_router(analytics.router)
 app.include_router(export.router)
+app.include_router(inbound.router)
 
 STATIC_DIR = settings.root / "static"
 
