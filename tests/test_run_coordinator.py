@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -41,7 +42,7 @@ def test_one_coordinator_serializes_runs_and_page_resolution_across_accounts():
 
 
 async def _exercise_coordinator():
-    coordinator = RunCoordinator(object(), object(), factory=FakeOrchestrator)
+    coordinator = RunCoordinator(SimpleNamespace(allow_live_sends=True), object(), factory=FakeOrchestrator)
     first = await coordinator.start("sender-a", [], action="connect")
 
     with pytest.raises(RuntimeError, match="already in progress"):
@@ -57,3 +58,16 @@ async def _exercise_coordinator():
         await coordinator.start("sender-a", [], action="connect")
     coordinator.get("sender-b").resolve_gate.set()
     assert await resolving == [{}]
+
+
+def test_hosted_no_send_gate_is_enforced_below_http_routes():
+    coordinator = RunCoordinator(SimpleNamespace(allow_live_sends=False), object(), factory=FakeOrchestrator)
+
+    async def check():
+        with pytest.raises(RuntimeError, match="Live sends are disabled"):
+            await coordinator.start("sender-a", [], dry_run=False)
+        assert coordinator.active() is None
+        dry = await coordinator.start("sender-a", [], dry_run=True)
+        assert dry.busy
+
+    asyncio.run(check())

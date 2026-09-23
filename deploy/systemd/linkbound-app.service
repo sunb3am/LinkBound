@@ -1,0 +1,25 @@
+[Unit]
+Description=LinkBound private web app and browser coordinator
+Requires=linkbound-display.service
+After=network-online.target tailscaled.service linkbound-display.service linkbound-window-manager.service
+Conflicts=linkbound-phase0-pilot.service
+
+[Service]
+Type=simple
+User=linkbound
+Group=linkbound
+WorkingDirectory=/opt/linkbound/current
+Environment=HOME=/var/lib/linkbound
+Environment=DISPLAY=:1
+EnvironmentFile=/etc/linkbound/app.env
+ExecStart=/opt/linkbound/current/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-headers
+KillSignal=SIGINT
+KillMode=mixed
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

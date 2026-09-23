@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 
 from fastapi import (
@@ -18,8 +19,10 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware import Middleware
 
 from . import csv_ingest, db, voice as voicelib, campaigns, crm, analytics, export
+from .access import TailscaleAuthMiddleware
 from .ai import GeminiClient
 from .models import (
     ActionType,
@@ -52,7 +55,15 @@ settings.operators = {
     for op in db.list_operators()
 }
 
-app = FastAPI(title="LinkBound · LinkedIn Outbound", version="2.0.0")
+app = FastAPI(
+    title="LinkBound · LinkedIn Outbound",
+    version="2.0.0",
+    middleware=[Middleware(
+        TailscaleAuthMiddleware,
+        enabled=settings.require_tailscale_auth,
+        allowed_users=settings.tailscale_allowed_users,
+    )],
+)
 gemini = GeminiClient(settings.ai)
 
 app.include_router(campaigns.router)
@@ -131,6 +142,7 @@ async def get_config():
         "templates": [t["name"] for t in db.list_templates()],
         "actions": [a.value for a in ActionType],
         "default_action": settings.behavior.default_action,
+        "live_sends_enabled": settings.allow_live_sends,
         "behavior": {
             "inmail_enabled": settings.behavior.inmail_enabled,
             "message_if_connected": settings.behavior.message_if_connected,
@@ -209,7 +221,9 @@ async def create_operator(body: OperatorCreate):
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "Operator name is required.")
-    key = name.lower().replace(" ", "_").replace("-", "_")
+    key = re.sub(r"[^a-z0-9]+", "_", name.casefold()).strip("_")
+    if not key or len(key) > 64:
+        raise HTTPException(400, "Account name must contain letters or numbers and be at most 64 characters.")
     
     # Check if exists
     ops = db.list_operators()
@@ -302,6 +316,8 @@ async def preview_urls(req: UrlsPreviewRequest):
 
 @app.post("/api/start", response_model=ControlResponse)
 async def start(req: StartRequest, x_user_gemini_key: str | None = Header(None), x_user_gemini_model: str | None = Header(None)):
+    if not req.dry_run and not settings.allow_live_sends:
+        raise HTTPException(409, "Live sends are disabled on this host.")
     upload = _UPLOADS.get(req.upload_id)
     if not upload:
         raise HTTPException(404, "Upload not found. Re-run the preview.")
@@ -495,9 +511,16 @@ async def batch_detail(batch_id: int, operator: str):
 
 @app.get("/api/screenshot")
 async def screenshot(path: str):
-    target = (settings.root / path).resolve()
     shots_dir = settings.screenshots_dir().resolve()
-    if not str(target).startswith(str(shots_dir)) or not target.exists():
+    relative = path.replace("\\", "/")
+    if relative.startswith("data/screenshots/"):
+        relative = relative[len("data/screenshots/"):]
+    elif relative.startswith("screenshots/"):
+        relative = relative[len("screenshots/"):]
+    else:
+        raise HTTPException(404, "Screenshot not found.")
+    target = (shots_dir / relative).resolve()
+    if not target.is_relative_to(shots_dir) or not target.is_file():
         raise HTTPException(404, "Screenshot not found.")
     return FileResponse(str(target))
 
@@ -548,6 +571,8 @@ async def v1_templates(_key: str = Depends(require_api_key)):
 async def v1_enqueue(req: EnqueueRequest, _key: str = Depends(require_api_key)):
     """Programmatically start an outbound batch. Designed for internal tools (e.g.
     the candidate-account engine) to drive outreach without the dashboard."""
+    if not req.dry_run and not settings.allow_live_sends:
+        raise HTTPException(409, "Live sends are disabled on this host.")
     ops = {op["key"]: op for op in db.list_operators()}
     if req.operator not in ops:
         raise HTTPException(400, f"Unknown operator '{req.operator}'.")

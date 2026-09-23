@@ -179,6 +179,11 @@ function restoreActiveView() {
 // ─── Config Boot ───────────────────────────────────────────────────────────
 async function loadConfig() {
   state.config = await api("/api/config");
+  const dryRun = $("#dryRun");
+  const sendsDisabled = state.config.live_sends_enabled === false;
+  dryRun.checked = sendsDisabled || dryRun.checked;
+  dryRun.disabled = sendsDisabled;
+  $("#sendModeNotice").hidden = !sendsDisabled;
   const sel = $("#operator");
   sel.innerHTML = "";
 

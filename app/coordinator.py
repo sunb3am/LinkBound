@@ -29,6 +29,8 @@ class RunCoordinator:
         return next((o for o in self.orchestrators.values() if o.is_busy()), None)
 
     async def start(self, operator: str, jobs: list[dict], **kwargs: Any) -> Orchestrator:
+        if not kwargs.get("dry_run", False) and not self.settings.allow_live_sends:
+            raise RuntimeError("Live sends are disabled on this host.")
         if self.active() is not None:
             raise RuntimeError("A browser operation is already in progress.")
         orch = self.get(operator)

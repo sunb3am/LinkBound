@@ -106,8 +106,12 @@ class Settings:
     api: APIConfig
     column_mapping: dict[str, list[str]]
     templates: dict[str, str]
+    require_tailscale_auth: bool
+    tailscale_allowed_users: list[str]
+    allow_live_sends: bool
     root: Path = ROOT
     data_dir: Path = DATA_DIR
+    profile_root: Path = ROOT
 
     def operator(self, key: str) -> OperatorConfig:
         if key not in self.operators:
@@ -117,7 +121,11 @@ class Settings:
     def profile_path(self, operator_key: str) -> Path:
         """Absolute, ensured path to the operator's persistent Chrome profile."""
         op = self.operator(operator_key)
-        path = self.root / op.profile_dir
+        configured = Path(op.profile_dir)
+        path = configured if configured.is_absolute() else self.profile_root / configured
+        path = path.resolve()
+        if not configured.is_absolute() and not path.is_relative_to(self.profile_root.resolve()):
+            raise ValueError("profile_dir must stay within LINKBOUND_PROFILE_ROOT")
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -175,6 +183,27 @@ def load_settings() -> Settings:
         raise ValueError("LINKBOUND_DATA_DIR must be an absolute path")
     data_dir.mkdir(parents=True, exist_ok=True)
 
+    profile_root = Path(os.environ.get("LINKBOUND_PROFILE_ROOT", str(ROOT))).expanduser()
+    if not profile_root.is_absolute():
+        raise ValueError("LINKBOUND_PROFILE_ROOT must be an absolute path")
+
+    auth_value = os.environ.get("LINKBOUND_REQUIRE_TAILSCALE_AUTH", "false").strip().casefold()
+    if auth_value not in {"true", "false"}:
+        raise ValueError("LINKBOUND_REQUIRE_TAILSCALE_AUTH must be true or false")
+    require_tailscale_auth = auth_value == "true"
+    tailscale_allowed_users = [
+        user.strip().casefold()
+        for user in os.environ.get("LINKBOUND_TAILSCALE_ALLOWED_USERS", "").split(",")
+        if user.strip()
+    ]
+    if require_tailscale_auth and not tailscale_allowed_users:
+        raise ValueError("LINKBOUND_TAILSCALE_ALLOWED_USERS is required when Tailscale auth is enabled")
+
+    send_value = os.environ.get("LINKBOUND_ALLOW_LIVE_SENDS", "true").strip().casefold()
+    if send_value not in {"true", "false"}:
+        raise ValueError("LINKBOUND_ALLOW_LIVE_SENDS must be true or false")
+    allow_live_sends = send_value == "true"
+
     return Settings(
         server=server,
         operators=operators,
@@ -185,5 +214,9 @@ def load_settings() -> Settings:
         api=api_cfg,
         column_mapping=column_mapping,
         templates={str(k): str(v) for k, v in templates.items()},
+        require_tailscale_auth=require_tailscale_auth,
+        tailscale_allowed_users=tailscale_allowed_users,
+        allow_live_sends=allow_live_sends,
         data_dir=data_dir,
+        profile_root=profile_root,
     )

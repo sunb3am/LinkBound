@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from playwright.async_api import (
     Browser,
@@ -1275,6 +1274,6 @@ class LinkedInRunner:
             filename = f"{self.operator}_{idx:04d}_{safe}_{tag}.png"
             path = self.settings.screenshots_dir() / filename
             await page.screenshot(path=str(path))
-            return str(Path(path).relative_to(self.settings.root))
+            return f"screenshots/{filename}"
         except Exception:
             return ""
