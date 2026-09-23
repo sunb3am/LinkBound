@@ -123,6 +123,17 @@ Use a restrained operations console treatment: canvas `#F8F8F5`, surface `#FFFFF
 | D. Closed-loop CRM | Daily inbound sync, accepted and reply evidence, account-scoped threads, attachments, inbox review, bulk export | Two scans create no duplicate messages or files; unmatched replies and stale sync stay visible; exported bytes match hashes and source records |
 | E. Cruitical promotion | Agreed candidate permission rule and narrow idempotent integration | Duplicate delivery yields one candidate; missing email or permission stays in review; existing resume is not overwritten silently |
 
+The 0a findings are assigned as follows:
+
+| Finding | Delivery point |
+| --- | --- |
+| Per-account browser ownership and one place to pause work | A: account identity and the shared coordinator |
+| Repeatable environment record, protected profiles, and browser host security | B: private deployment and operational checks |
+| Challenge, restriction, limit, and uncertain-send stops; account-specific pilot budget | C: outbound worker and the small reviewed hosted-send pilot; the shared pause mechanism starts in A |
+| Unread/read-receipt behavior and bounded inbox scans | Finish the unread-state observation from 0 before D; implement bounded collection and stop conditions in D |
+| Account-owner acceptance of LinkedIn's stated automation risk | Decision gate before any hosted send in C, not an engineering feature |
+| LinkedIn partner/API eligibility | Research before committing to browser-based C and D as the permanent integration; revisit those phases if access is approved |
+
 The browser feasibility pilot comes before major queue work because always-on hosted automation is the point of the deployment. It is a gate for hosted sends, not a reason to rewrite the existing browser selectors. The first implementation branch should contain the pilot and Release A only.
 
 ## Founder decisions requested after this plan
