@@ -170,7 +170,10 @@ def load_settings() -> Settings:
 
     column_mapping = cfg.get("column_mapping") or {}
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    data_dir = Path(os.environ.get("LINKBOUND_DATA_DIR", str(DATA_DIR))).expanduser()
+    if not data_dir.is_absolute():
+        raise ValueError("LINKBOUND_DATA_DIR must be an absolute path")
+    data_dir.mkdir(parents=True, exist_ok=True)
 
     return Settings(
         server=server,
@@ -182,4 +185,5 @@ def load_settings() -> Settings:
         api=api_cfg,
         column_mapping=column_mapping,
         templates={str(k): str(v) for k, v in templates.items()},
+        data_dir=data_dir,
     )

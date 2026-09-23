@@ -1,0 +1,15 @@
+[Unit]
+Description=LinkBound private Xvnc display
+After=network.target
+
+[Service]
+Type=simple
+User=linkbound
+Group=linkbound
+Environment=HOME=/var/lib/linkbound
+ExecStart=/usr/bin/Xtigervnc :1 -geometry 1440x900 -depth 24 -localhost -SecurityTypes VncAuth -PasswordFile /var/lib/linkbound/.vnc/passwd -desktop LinkBound
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+[Unit]
+Description=LinkBound no-send headed browser pilot
+Requires=linkbound-display.service
+After=linkbound-display.service linkbound-window-manager.service
+
+[Service]
+Type=simple
+User=linkbound
+Group=linkbound
+WorkingDirectory=/opt/linkbound/current
+Environment=HOME=/var/lib/linkbound
+Environment=DISPLAY=:1
+Environment=LINKBOUND_DATA_DIR=/var/lib/linkbound/data
+ExecStart=/opt/linkbound/pilot-venv/bin/python -m scripts.phase0_browser --operator me --profile-dir /var/lib/linkbound/profiles/me --evidence-dir /var/lib/linkbound/evidence --wait-seconds 1800
+KillSignal=SIGINT
+TimeoutStopSec=20
