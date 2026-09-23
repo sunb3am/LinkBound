@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from . import db
 from .settings import SafetyConfig
@@ -31,3 +31,14 @@ class SafetyGovernor:
         lo = self.safety.min_delay_seconds
         hi = max(self.safety.max_delay_seconds, lo)
         return random.randint(lo, hi)
+
+
+def remaining_queue_budget(operator: str, safety: SafetyConfig, now: datetime | None = None) -> int:
+    """Apply rolling 24-hour and 7-day caps across all queued campaigns on an account."""
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    day_start = (now - timedelta(days=1)).isoformat()
+    week_start = (now - timedelta(days=7)).isoformat()
+    return max(0, min(
+        safety.daily_cap - db.count_sent_since(operator, day_start),
+        safety.queue_weekly_cap - db.count_sent_since(operator, week_start),
+    ))

@@ -66,6 +66,7 @@ def init_db(db_path: Path) -> None:
         _CONN = sqlite3.connect(str(db_path), check_same_thread=False)
         _CONN.row_factory = sqlite3.Row
         _CONN.execute("PRAGMA busy_timeout = 5000")
+        _CONN.execute("PRAGMA foreign_keys = ON")
         _CONN.executescript(
             """
             CREATE TABLE IF NOT EXISTS contacts (
@@ -208,6 +209,9 @@ def init_db(db_path: Path) -> None:
             _ensure_column(_CONN, "outbound_requests", "headline", "headline TEXT")
             _ensure_column(_CONN, "outbound_requests", "normalized_linkedin_url", "normalized_linkedin_url TEXT")
             _migrate_account_contacts(_CONN)
+            _migrate_campaign_queue(_CONN)
+            _migrate_outreach_uncertainties(_CONN)
+            _migrate_campaign_pause_reason(_CONN)
             _CONN.execute("CREATE INDEX IF NOT EXISTS idx_requests_normalized_status ON outbound_requests(normalized_linkedin_url, status)")
             _CONN.execute("CREATE INDEX IF NOT EXISTS idx_contacts_normalized_url ON contacts(normalized_linkedin_url)")
             _CONN.commit()
@@ -295,6 +299,76 @@ def _migrate_account_contacts(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE outbound_requests SET normalized_linkedin_url=? WHERE rowid=?",
                 (normalized, row["db_rowid"]))
     conn.execute("PRAGMA user_version = 2")
+
+
+def _migrate_campaign_queue(conn: sqlite3.Connection) -> None:
+    """Add durable queue metadata and targets as schema version 3."""
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if version >= 3:
+        return
+    _ensure_column(conn, "campaigns", "timezone", "timezone TEXT")
+    _ensure_column(conn, "campaigns", "daily_chunk", "daily_chunk INTEGER")
+    _ensure_column(conn, "campaigns", "start_at_utc", "start_at_utc TEXT")
+    _ensure_column(conn, "campaigns", "last_run_local_date", "last_run_local_date TEXT")
+    _ensure_column(conn, "campaigns", "source_name", "source_name TEXT")
+    _ensure_column(conn, "campaigns", "source_bytes", "source_bytes BLOB")
+    _ensure_column(conn, "campaigns", "validation_json", "validation_json TEXT")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS campaign_targets (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+               operator TEXT NOT NULL,
+               ordinal INTEGER NOT NULL,
+               linkedin_url TEXT NOT NULL,
+               normalized_linkedin_url TEXT NOT NULL,
+               job_json TEXT NOT NULL,
+               state TEXT NOT NULL,
+               available_at_utc TEXT NOT NULL,
+               claimed_at_utc TEXT,
+               completed_at_utc TEXT,
+               batch_id INTEGER,
+               request_id INTEGER,
+               detail TEXT,
+               UNIQUE(campaign_id, normalized_linkedin_url)
+           )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_campaign_targets_due ON campaign_targets(state, available_at_utc, campaign_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_campaign_targets_campaign ON campaign_targets(campaign_id, ordinal)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_campaign_targets_batch ON campaign_targets(batch_id)")
+    conn.execute("PRAGMA user_version = 3")
+
+
+def _migrate_outreach_uncertainties(conn: sqlite3.Connection) -> None:
+    """Version 4 records possible browser actions before they can be retried."""
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if version >= 4:
+        return
+    conn.execute(
+        """CREATE TABLE outreach_uncertainties (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               operator TEXT NOT NULL,
+               normalized_linkedin_url TEXT NOT NULL,
+               batch_id INTEGER,
+               target_id INTEGER UNIQUE REFERENCES campaign_targets(id),
+               request_id INTEGER UNIQUE REFERENCES outbound_requests(id),
+               detected_at TEXT NOT NULL,
+               verdict TEXT CHECK(verdict IN ('sent', 'not_sent', 'recorded')),
+               reviewed_at TEXT,
+               note TEXT NOT NULL DEFAULT ''
+           )"""
+    )
+    conn.execute(
+        "CREATE INDEX idx_uncertainties_profile ON outreach_uncertainties(normalized_linkedin_url, verdict)"
+    )
+    conn.execute("PRAGMA user_version = 4")
+
+
+def _migrate_campaign_pause_reason(conn: sqlite3.Connection) -> None:
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if version >= 5:
+        return
+    _ensure_column(conn, "campaigns", "pause_reason", "pause_reason TEXT")
+    conn.execute("PRAGMA user_version = 5")
 
 
 def close_db() -> None:
@@ -387,15 +461,20 @@ def _has_successful_send(conn: sqlite3.Connection, key: str, operator: str | Non
 
 
 def is_already_contacted(
-    linkedin_url: str, contacted_statuses: set[str], operator: str
+    linkedin_url: str, contacted_statuses: set[str], operator: str,
+    *, exclude_queue_target_id: int | None = None,
 ) -> bool:
-    """Suppress any confirmed send globally, plus contacted observations on this account."""
-    return should_suppress_contact(linkedin_url, contacted_statuses, operator)
+    """Suppress confirmed or unresolved outreach before any browser action."""
+    return should_suppress_contact(
+        linkedin_url, contacted_statuses, operator,
+        exclude_queue_target_id=exclude_queue_target_id,
+    )
 
 
 def should_suppress_contact(
     linkedin_url: str, contacted_statuses: set[str], operator: str,
     *, global_suppression: bool = True, allow_override: bool = False,
+    exclude_queue_target_id: int | None = None,
 ) -> bool:
     """Policy hook for global confirmed-send suppression and future reviewed overrides."""
     key = normalize_url(linkedin_url)
@@ -405,6 +484,23 @@ def should_suppress_contact(
         conn = _conn()
         if not allow_override and global_suppression and _has_successful_send(conn, key):
             return True
+        if not allow_override and global_suppression:
+            unresolved = conn.execute(
+                """SELECT 1 FROM outreach_uncertainties
+                    WHERE normalized_linkedin_url=? AND (verdict IS NULL OR verdict='sent')
+                    LIMIT 1""",
+                (key,),
+            ).fetchone()
+            if unresolved:
+                return True
+            queued = conn.execute(
+                """SELECT 1 FROM campaign_targets
+                    WHERE normalized_linkedin_url=? AND state IN ('queued', 'sending', 'uncertain')
+                      AND (? IS NULL OR id<>?) LIMIT 1""",
+                (key, exclude_queue_target_id, exclude_queue_target_id),
+            ).fetchone()
+            if queued:
+                return True
         row = conn.execute(
             "SELECT last_observed_status FROM account_contacts WHERE operator=? AND linkedin_url=?",
             (operator, key),
@@ -442,20 +538,32 @@ def list_contacts(operator: str, search: str = "", limit: int = 500) -> list[dic
 
 
 def count_sent_today(operator: str) -> int:
-    """Count successful sends by this operator since UTC midnight today."""
+    """Count confirmed and possibly sent actions since UTC midnight today."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return count_sent_since(operator, f"{today}T00:00:00+00:00")
+
+
+def count_sent_since(operator: str, since_utc: str) -> int:
+    """Count confirmed sends and possibly sent queued targets in a rolling window."""
     placeholders = ",".join("?" for _ in SENT_STATUSES)
     with _LOCK:
-        cur = _conn().execute(
-            f"""
-            SELECT COUNT(*) AS c FROM outbound_requests
-             WHERE status IN ({placeholders})
-               AND substr(created_at, 1, 10) = ?
-               AND operator = ?
-            """,
-            (*SENT_STATUSES, today, operator),
-        )
-        return int(cur.fetchone()["c"])
+        row = _conn().execute(
+            f"""SELECT COUNT(*) AS c FROM outbound_requests
+                 WHERE operator=? AND status IN ({placeholders}) AND created_at>?""",
+            (operator, *SENT_STATUSES, since_utc),
+        ).fetchone()
+        pending = _conn().execute(
+            """SELECT COUNT(*) AS c FROM campaign_targets
+                WHERE operator=? AND state='sending' AND claimed_at_utc>?""",
+            (operator, since_utc),
+        ).fetchone()
+        uncertain = _conn().execute(
+            """SELECT COUNT(*) AS c FROM outreach_uncertainties
+                WHERE operator=? AND detected_at>?
+                  AND (verdict IS NULL OR verdict='sent')""",
+            (operator, since_utc),
+        ).fetchone()
+        return int(row["c"]) + int(pending["c"]) + int(uncertain["c"])
 
 
 # ---- batches --------------------------------------------------------------
@@ -545,7 +653,8 @@ def record_outcome(
     action_requested: str, action_executed: str, template_id: int | None,
     template_name: str, message_rendered: str, status: str, detail: str = "",
     decision_trace: list[Any] | None = None, screenshot_path: str = "",
-    headline: str = "", degree: str = "",
+    headline: str = "", degree: str = "", queue_target_id: int | None = None,
+    uncertainty_id: int | None = None,
 ) -> tuple[int, str]:
     """Atomically append an attempt and refresh account/profile observations."""
     key = normalize_url(linkedin_url)
@@ -578,6 +687,43 @@ def record_outcome(
                 )
                 _upsert_profile_details(conn, linkedin_url=key, full_name=full_name,
                     first_name=first_name, company_csv=company_csv, headline=headline, now=now)
+            if queue_target_id is not None:
+                if status in SENT_STATUSES:
+                    target_state = "sent"
+                elif status in {"skipped_dedup", "pending", "already_connected"}:
+                    target_state = "skipped"
+                elif status in {"failed_other", "dry_run"}:
+                    target_state = "uncertain"
+                else:
+                    target_state = "failed"
+                updated = conn.execute(
+                    """UPDATE campaign_targets
+                          SET state=?, completed_at_utc=?, request_id=?, detail=?
+                        WHERE id=? AND state='sending' AND batch_id=?
+                          AND operator=? AND normalized_linkedin_url=?""",
+                    (target_state, now, result[0], detail, queue_target_id,
+                     batch_id, operator, key),
+                )
+                if updated.rowcount != 1:
+                    raise ValueError("Queued target claim is missing or belongs to another run")
+                if status == "failed_other":
+                    conn.execute(
+                        """INSERT INTO outreach_uncertainties
+                               (operator, normalized_linkedin_url, batch_id, target_id,
+                                request_id, detected_at)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (operator, key, batch_id, queue_target_id, result[0], now),
+                    )
+            if uncertainty_id is not None:
+                verdict = None if status == "failed_other" else "recorded"
+                updated = conn.execute(
+                    """UPDATE outreach_uncertainties
+                          SET request_id=?, verdict=?, reviewed_at=CASE WHEN ? IS NULL THEN NULL ELSE ? END
+                        WHERE id=? AND operator=? AND batch_id=? AND verdict IS NULL""",
+                    (result[0], verdict, verdict, now, uncertainty_id, operator, batch_id),
+                )
+                if updated.rowcount != 1:
+                    raise ValueError("Immediate browser attempt marker is missing")
             conn.commit()
             return result
         except Exception:
@@ -804,3 +950,450 @@ def delete_operator(key: str) -> bool:
         cur = conn.execute("DELETE FROM operators WHERE key=?", (key,))
         conn.commit()
         return cur.rowcount > 0
+
+
+# ---- durable outbound campaign queue -------------------------------------
+
+def create_queued_campaign(
+    operator: str, name: str, action: str, timezone: str, daily_chunk: int,
+    start_at_utc: str | None, targets: list[dict[str, Any]], *,
+    source_name: str = "", source_bytes: bytes = b"", validation_json: str = "[]",
+    run_options_json: str = "{}",
+) -> int:
+    """Create a queued campaign and its scheduled targets atomically."""
+    now = _now()
+    with _LOCK:
+        conn = _conn()
+        try:
+            conn.execute("BEGIN")
+            if not targets:
+                raise ValueError("A queued campaign needs at least one target")
+            cur = conn.execute(
+                """INSERT INTO campaigns
+                       (name, action, operator, status, created_at, updated_at,
+                        timezone, daily_chunk, start_at_utc, source_name,
+                        source_bytes, validation_json, safety_json)
+                   VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (name, action, operator, now, now, timezone, daily_chunk, start_at_utc,
+                 source_name, source_bytes, validation_json, run_options_json),
+            )
+            campaign_id = int(cur.lastrowid)
+            for ordinal, target in enumerate(targets):
+                job = target["job"]
+                linkedin_url = str(job.get("linkedin_url") or "").strip()
+                normalized = normalize_url(linkedin_url)
+                if not normalized:
+                    raise ValueError("Each campaign target must include a LinkedIn profile URL.")
+                if _has_successful_send(conn, normalized):
+                    raise ValueError(f"Profile has a confirmed prior send: {linkedin_url}")
+                relationship = conn.execute(
+                    """SELECT last_observed_status FROM account_contacts
+                        WHERE operator=? AND linkedin_url=?""",
+                    (operator, normalized),
+                ).fetchone()
+                if relationship and relationship["last_observed_status"] in (TERMINAL_CONTACTED | {LEGACY_UNVERIFIED}):
+                    raise ValueError(f"Profile is already contacted on this account: {linkedin_url}")
+                uncertainty = conn.execute(
+                    """SELECT 1 FROM outreach_uncertainties
+                        WHERE normalized_linkedin_url=?
+                          AND (verdict IS NULL OR verdict='sent') LIMIT 1""",
+                    (normalized,),
+                ).fetchone()
+                if uncertainty:
+                    raise ValueError(f"Profile has unresolved or confirmed outreach: {linkedin_url}")
+                duplicate = conn.execute(
+                    """SELECT 1 FROM campaign_targets
+                        WHERE normalized_linkedin_url=?
+                          AND state IN ('queued', 'sending', 'uncertain') LIMIT 1""",
+                    (normalized,),
+                ).fetchone()
+                if duplicate:
+                    raise ValueError(f"Profile has active or unresolved queued outreach: {linkedin_url}")
+                conn.execute(
+                    """INSERT INTO campaign_targets
+                           (campaign_id, operator, ordinal, linkedin_url,
+                            normalized_linkedin_url, job_json, state, available_at_utc)
+                       VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)""",
+                    (campaign_id, operator, ordinal, linkedin_url, normalized,
+                     json.dumps(job, ensure_ascii=False), target["available_at_utc"]),
+                )
+            conn.commit()
+            return campaign_id
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def list_due_targets(now_utc: str, limit: int) -> list[dict[str, Any]]:
+    """List available targets whose parent campaign is currently queued."""
+    with _LOCK:
+        rows = _conn().execute(
+            """SELECT ct.*, c.name AS campaign_name, c.action AS campaign_action,
+                      c.timezone AS campaign_timezone, c.daily_chunk AS campaign_daily_chunk,
+                      c.safety_json AS campaign_run_options,
+                      c.last_run_local_date AS campaign_last_run_local_date
+                 FROM campaign_targets ct JOIN campaigns c ON c.id=ct.campaign_id
+                WHERE c.status='queued' AND ct.state='queued' AND ct.available_at_utc<=?
+                ORDER BY ct.available_at_utc, ct.campaign_id, ct.ordinal
+                LIMIT ?""",
+            (now_utc, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def list_due_campaign_heads(now_utc: str) -> list[dict[str, Any]]:
+    """Return the earliest due target for each queued campaign.
+
+    A large first campaign must not hide other due campaigns behind a row limit.
+    """
+    with _LOCK:
+        rows = _conn().execute(
+            """SELECT ct.*, c.name AS campaign_name, c.action AS campaign_action,
+                      c.timezone AS campaign_timezone, c.daily_chunk AS campaign_daily_chunk,
+                      c.safety_json AS campaign_run_options,
+                      c.last_run_local_date AS campaign_last_run_local_date
+                 FROM campaigns c JOIN campaign_targets ct ON ct.id=(
+                      SELECT t.id FROM campaign_targets t
+                       WHERE t.campaign_id=c.id AND t.state='queued'
+                         AND t.available_at_utc<=?
+                       ORDER BY t.available_at_utc, t.ordinal LIMIT 1)
+                WHERE c.status='queued'
+                ORDER BY ct.available_at_utc, ct.campaign_id""",
+            (now_utc,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def list_due_campaign_chunk(campaign_id: int, now_utc: str, limit: int) -> list[dict[str, Any]]:
+    """Read only this campaign's next due targets after choosing a campaign."""
+    with _LOCK:
+        rows = _conn().execute(
+            """SELECT * FROM campaign_targets
+                WHERE campaign_id=? AND state='queued' AND available_at_utc<=?
+                ORDER BY available_at_utc, ordinal LIMIT ?""",
+            (campaign_id, now_utc, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def list_campaign_targets(campaign_id: int) -> list[dict[str, Any]]:
+    with _LOCK:
+        rows = _conn().execute(
+            "SELECT * FROM campaign_targets WHERE campaign_id=? ORDER BY ordinal, id",
+            (campaign_id,),
+        ).fetchall()
+        results = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["job"] = json.loads(item.pop("job_json"))
+            except (json.JSONDecodeError, TypeError):
+                item["job"] = {}
+            results.append(item)
+        return results
+
+
+def list_queued_campaigns(operator: str) -> list[dict[str, Any]]:
+    """Account-scoped queue overview without copying original source bytes."""
+    with _LOCK:
+        rows = _conn().execute(
+            """SELECT c.id, c.name, c.operator, c.action, c.status, c.timezone,
+                      c.daily_chunk, c.start_at_utc, c.source_name, c.pause_reason, c.created_at,
+                      c.updated_at, COUNT(t.id) AS total,
+                      SUM(CASE WHEN t.state='queued' THEN 1 ELSE 0 END) AS queued,
+                      SUM(CASE WHEN t.state='sending' THEN 1 ELSE 0 END) AS sending,
+                      SUM(CASE WHEN t.state='sent' THEN 1 ELSE 0 END) AS sent,
+                      SUM(CASE WHEN t.state='skipped' THEN 1 ELSE 0 END) AS skipped,
+                      SUM(CASE WHEN t.state='failed' THEN 1 ELSE 0 END) AS failed,
+                      SUM(CASE WHEN t.state='uncertain' THEN 1 ELSE 0 END) AS uncertain,
+                      SUM(CASE WHEN t.state='cancelled' THEN 1 ELSE 0 END) AS cancelled,
+                      MIN(CASE WHEN t.state='queued' THEN t.available_at_utc END) AS next_due_at_utc
+                 FROM campaigns c JOIN campaign_targets t ON t.campaign_id=c.id
+                WHERE c.operator=? GROUP BY c.id ORDER BY c.id DESC""",
+            (operator,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def get_queued_campaign(campaign_id: int, operator: str) -> dict[str, Any] | None:
+    with _LOCK:
+        row = _conn().execute(
+            """SELECT id, name, operator, action, status, timezone, daily_chunk,
+                      start_at_utc, source_name, validation_json, pause_reason, created_at, updated_at
+                 FROM campaigns WHERE id=? AND operator=?
+                   AND EXISTS (SELECT 1 FROM campaign_targets WHERE campaign_id=?)""",
+            (campaign_id, operator, campaign_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_campaign_source(campaign_id: int, operator: str) -> tuple[str, bytes] | None:
+    with _LOCK:
+        row = _conn().execute(
+            """SELECT source_name, source_bytes FROM campaigns
+                WHERE id=? AND operator=?
+                  AND EXISTS (SELECT 1 FROM campaign_targets WHERE campaign_id=?)""",
+            (campaign_id, operator, campaign_id),
+        ).fetchone()
+        return (row["source_name"] or "source.csv", row["source_bytes"] or b"") if row else None
+
+
+def claim_campaign_target(target_id: int, batch_id: int, now_utc: str) -> bool:
+    """Atomically claim one queued target for a queued campaign."""
+    with _LOCK:
+        conn = _conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                """UPDATE campaign_targets SET state='sending', batch_id=?, claimed_at_utc=?
+                     WHERE id=? AND state='queued'
+                       AND available_at_utc<=?
+                       AND EXISTS (SELECT 1 FROM campaigns c
+                                    WHERE c.id=campaign_targets.campaign_id AND c.status='queued')""",
+                (batch_id, now_utc, target_id, now_utc),
+            )
+            conn.commit()
+            return cur.rowcount == 1
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def release_campaign_target(target_id: int, batch_id: int) -> bool:
+    """Undo a claim before browser action when a time or budget gate closes."""
+    with _LOCK:
+        conn = _conn()
+        updated = conn.execute(
+            """UPDATE campaign_targets
+                  SET state='queued', batch_id=NULL, claimed_at_utc=NULL
+                WHERE id=? AND batch_id=? AND state='sending' AND request_id IS NULL""",
+            (target_id, batch_id),
+        )
+        conn.commit()
+        return updated.rowcount == 1
+
+
+def begin_immediate_attempt(batch_id: int, operator: str, linkedin_url: str) -> int:
+    """Persist a possible browser action before an immediate live run acts."""
+    key = normalize_url(linkedin_url)
+    with _LOCK:
+        conn = _conn()
+        cur = conn.execute(
+            """INSERT INTO outreach_uncertainties
+                   (operator, normalized_linkedin_url, batch_id, detected_at)
+               VALUES (?, ?, ?, ?)""",
+            (operator, key, batch_id, _now()),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def mark_inflight_targets_uncertain(batch_id: int | None = None) -> int:
+    """Mark interrupted sends uncertain after process restart; never requeue them."""
+    now = _now()
+    with _LOCK:
+        conn = _conn()
+        conn.execute(
+            """INSERT INTO outreach_uncertainties
+                   (operator, normalized_linkedin_url, batch_id, target_id,
+                    request_id, detected_at)
+               SELECT operator, normalized_linkedin_url, batch_id, id,
+                      request_id, COALESCE(claimed_at_utc, ?)
+                 FROM campaign_targets
+                WHERE state='sending' AND (? IS NULL OR batch_id=?)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM outreach_uncertainties u WHERE u.target_id=campaign_targets.id)""",
+            (now, batch_id, batch_id),
+        )
+        conn.execute(
+            """UPDATE campaigns SET status='paused',
+                   pause_reason='Interrupted browser action requires review', updated_at=?
+                 WHERE status='queued' AND id IN (
+                     SELECT campaign_id FROM campaign_targets
+                      WHERE state='sending' AND (? IS NULL OR batch_id=?))""",
+            (now, batch_id, batch_id),
+        )
+        cur = conn.execute(
+            """UPDATE campaign_targets
+                  SET state='uncertain', completed_at_utc=?,
+                      detail=CASE WHEN COALESCE(detail, '')='' THEN 'Process restarted while send was in flight.'
+                                  ELSE detail || char(10) || 'Process restarted while send was in flight.' END
+                WHERE state='sending' AND (? IS NULL OR batch_id=?)""",
+            (now, batch_id, batch_id),
+        )
+        if batch_id is None:
+            conn.execute(
+                """UPDATE batches SET status='interrupted', finished_at=?
+                     WHERE status='running'""",
+                (now,),
+            )
+        conn.commit()
+        return cur.rowcount
+
+
+def list_unresolved_outreach(operator: str) -> list[dict[str, Any]]:
+    """Account-scoped browser outcomes needing a human check."""
+    with _LOCK:
+        rows = _conn().execute(
+            """SELECT u.id, u.operator, u.normalized_linkedin_url AS linkedin_url,
+                      u.detected_at, u.target_id, u.request_id,
+                      COALESCE(ct.detail, r.detail, 'Browser action interrupted') AS detail,
+                      c.name AS campaign_name
+                 FROM outreach_uncertainties u
+                 LEFT JOIN campaign_targets ct ON ct.id=u.target_id
+                 LEFT JOIN campaigns c ON c.id=ct.campaign_id
+                 LEFT JOIN outbound_requests r ON r.id=u.request_id
+                 LEFT JOIN batches b ON b.id=u.batch_id
+                WHERE u.operator=? AND u.verdict IS NULL
+                  AND (u.target_id IS NOT NULL OR b.status<>'running')
+                ORDER BY u.detected_at DESC, u.id DESC""",
+            (operator,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def review_outreach_uncertainty(
+    uncertainty_id: int, operator: str, verdict: str, note: str,
+) -> bool:
+    """Record a human verdict; never silently requeue an uncertain target."""
+    if verdict not in {"sent", "not_sent"} or not note.strip():
+        raise ValueError("A sent or not_sent verdict and review note are required")
+    with _LOCK:
+        conn = _conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """SELECT u.id, u.target_id, u.normalized_linkedin_url
+                     FROM outreach_uncertainties u
+                     LEFT JOIN batches b ON b.id=u.batch_id
+                    WHERE u.id=? AND u.operator=? AND u.verdict IS NULL
+                      AND (u.target_id IS NOT NULL OR b.status<>'running')""",
+                (uncertainty_id, operator),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return False
+            if row["target_id"] is not None:
+                updated = conn.execute(
+                    """UPDATE campaign_targets SET state=?, completed_at_utc=?,
+                           detail=COALESCE(detail, '') || char(10) || 'Reviewed: ' || ?
+                        WHERE id=? AND state='uncertain'""",
+                    ("sent" if verdict == "sent" else "failed", _now(), note.strip(), row["target_id"]),
+                )
+                if updated.rowcount != 1:
+                    raise ValueError("Queued target is no longer uncertain")
+            if verdict == "sent":
+                now = _now()
+                conn.execute(
+                    """INSERT INTO account_contacts
+                           (operator, linkedin_url, last_observed_status, degree,
+                            last_action_type, first_seen_at, last_observed_at)
+                       VALUES (?, ?, 'sent', '', 'manual_reconciled', ?, ?)
+                       ON CONFLICT(operator, linkedin_url) DO UPDATE SET
+                           last_observed_status='sent',
+                           last_action_type='manual_reconciled',
+                           last_observed_at=excluded.last_observed_at""",
+                    (operator, row["normalized_linkedin_url"], now, now),
+                )
+                _upsert_profile_details(
+                    conn, linkedin_url=row["normalized_linkedin_url"],
+                    full_name="", first_name="", company_csv="", headline="", now=now,
+                )
+            conn.execute(
+                """UPDATE outreach_uncertainties
+                      SET verdict=?, reviewed_at=?, note=? WHERE id=?""",
+                (verdict, _now(), note.strip(), uncertainty_id),
+            )
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def reserve_campaign_day(campaign_id: int, local_date: str) -> bool:
+    """Permit at most one scheduled chunk from a campaign on a local date."""
+    with _LOCK:
+        conn = _conn()
+        updated = conn.execute(
+            """UPDATE campaigns SET last_run_local_date=?, updated_at=?
+                 WHERE id=? AND status='queued'
+                   AND (last_run_local_date IS NULL OR last_run_local_date<>?)""",
+            (local_date, _now(), campaign_id, local_date),
+        )
+        conn.commit()
+        return updated.rowcount == 1
+
+
+def release_campaign_day_if_unstarted(campaign_id: int, local_date: str, batch_id: int) -> bool:
+    """Return a daily slot if the browser never reached any target in this run."""
+    with _LOCK:
+        conn = _conn()
+        updated = conn.execute(
+            """UPDATE campaigns SET last_run_local_date=NULL, updated_at=?
+                 WHERE id=? AND last_run_local_date=?
+                   AND NOT EXISTS (
+                       SELECT 1 FROM campaign_targets
+                        WHERE campaign_id=? AND batch_id=?)""",
+            (_now(), campaign_id, local_date, campaign_id, batch_id),
+        )
+        conn.commit()
+        return updated.rowcount == 1
+
+
+def campaign_status(campaign_id: int) -> str | None:
+    with _LOCK:
+        row = _conn().execute("SELECT status FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+        return row["status"] if row else None
+
+
+def set_campaign_status(campaign_id: int, new_status: str, reason: str | None = None) -> bool:
+    """Apply supported queue state transitions; cancellation only cancels queued targets."""
+    transitions = {"queued": {"paused", "cancelled"}, "paused": {"queued", "cancelled"}}
+    with _LOCK:
+        conn = _conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT status FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+            if row is None:
+                conn.rollback()
+                return False
+            old_status = row["status"]
+            if new_status == old_status:
+                conn.commit()
+                return True
+            if new_status not in transitions.get(old_status, set()):
+                raise ValueError(f"Invalid campaign status transition: {old_status} -> {new_status}")
+            conn.execute(
+                "UPDATE campaigns SET status=?, pause_reason=?, updated_at=? WHERE id=?",
+                (new_status, (reason or "Paused by operator") if new_status == "paused" else None,
+                 _now(), campaign_id),
+            )
+            if new_status == "cancelled":
+                conn.execute(
+                    """UPDATE campaign_targets SET state='cancelled', completed_at_utc=?
+                         WHERE campaign_id=? AND state='queued'""",
+                    (_now(), campaign_id),
+                )
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def finish_campaign_if_drained(campaign_id: int) -> bool:
+    """Close a queued campaign only after all its targets have terminal states."""
+    with _LOCK:
+        conn = _conn()
+        updated = conn.execute(
+            """UPDATE campaigns SET status='finished', updated_at=?
+                 WHERE id=? AND status='queued'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM campaign_targets
+                        WHERE campaign_id=? AND state IN ('queued', 'sending')
+                   )""",
+            (_now(), campaign_id, campaign_id),
+        )
+        conn.commit()
+        return updated.rowcount == 1

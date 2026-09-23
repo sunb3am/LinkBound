@@ -53,6 +53,8 @@ async def update_campaign(campaign_id: int, body: CampaignUpdate):
     
     with db._LOCK:
         conn = db._conn()
+        if conn.execute("SELECT 1 FROM campaign_targets WHERE campaign_id=? LIMIT 1", (campaign_id,)).fetchone():
+            raise HTTPException(409, "Queued campaigns use the queue controls.")
         cur = conn.execute(f"UPDATE campaigns SET {cols} WHERE id=?", values)
         if cur.rowcount == 0:
             conn.rollback()
@@ -65,6 +67,8 @@ async def update_campaign(campaign_id: int, body: CampaignUpdate):
 async def delete_campaign(campaign_id: int):
     with db._LOCK:
         conn = db._conn()
+        if conn.execute("SELECT 1 FROM campaign_targets WHERE campaign_id=? LIMIT 1", (campaign_id,)).fetchone():
+            raise HTTPException(409, "Queued campaign history cannot be deleted.")
         cur = conn.execute("DELETE FROM campaigns WHERE id=?", (campaign_id,))
         if cur.rowcount == 0:
             conn.rollback()

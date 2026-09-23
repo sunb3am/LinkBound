@@ -22,7 +22,8 @@ operators:
 # Research consensus (2026): 15-25 connection requests/day for established
 # accounts, randomized timing, stop on any limit warning.
 safety:
-  daily_cap: 100 # max connection requests sent per operator per day
+  daily_cap: 100 # internal rolling 24-hour cap across confirmed and possible outbound actions
+  queue_weekly_cap: 100 # internal rolling 7-day queue cap; review per account before hosted sends
   min_delay_seconds: 30 # gap between profiles (set equal for a fixed 30s gap)
   max_delay_seconds: 30 # gap between profiles (widen above min to randomize)
   business_hours_only: false # if true, only send within the window below

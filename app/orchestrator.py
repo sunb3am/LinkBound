@@ -11,8 +11,9 @@ import asyncio
 import contextlib
 import json
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import db
 from .models import (
@@ -24,7 +25,7 @@ from .models import (
 )
 from .names import slug_from_url, split_full_name
 from .runner import LinkedInRunner, ProfileResult
-from .safety import SafetyGovernor
+from .safety import SafetyGovernor, remaining_queue_budget
 from .settings import Settings
 from .templating import referenced_variables, render
 
@@ -119,7 +120,7 @@ class Orchestrator:
     # ---- controls ---------------------------------------------------------
 
     def is_busy(self) -> bool:
-        return self.resolving or self.state in {
+        return self.resolving or (self._task is not None and not self._task.done()) or self.state in {
             RunState.RUNNING, RunState.PAUSED, RunState.WAITING_LOGIN
         }
 
@@ -333,6 +334,16 @@ class Orchestrator:
             await runner.open_feed()
 
             if not await runner.logged_in_now():
+                queued_campaigns = {job.get("campaign_id") for job in jobs
+                                    if job.get("campaign_id") is not None}
+                if queued_campaigns:
+                    for campaign_id in queued_campaigns:
+                        if db.campaign_status(campaign_id) == "queued":
+                            db.set_campaign_status(campaign_id, "paused", "LinkedIn login required")
+                    self.state = RunState.STOPPED
+                    db.finalize_batch(self.batch_id, "stopped")
+                    self._emit_state("Scheduled campaign paused: LinkedIn login is required in the browser viewer.")
+                    return
                 self.state = RunState.WAITING_LOGIN
                 self._emit_state(
                     "Waiting for you to log into LinkedIn in the browser window. "
@@ -363,6 +374,27 @@ class Orchestrator:
                 await self._wait_if_paused()
                 if self._stop_requested:
                     break
+                queue_target_id = job.get("queue_target_id")
+                campaign_id = job.get("campaign_id")
+                def within_hours() -> bool:
+                    if queue_target_id is None:
+                        return governor.within_business_hours()
+                    local_now = datetime.now(timezone.utc).astimezone(ZoneInfo(job["campaign_timezone"]))
+                    return governor.within_business_hours(local_now)
+                if queue_target_id is not None:
+                    if db.campaign_status(campaign_id) != "queued":
+                        break
+                    if remaining_queue_budget(self.operator, self.settings.safety) <= 0:
+                        self._emit_state("Daily or weekly queue cap reached; remaining targets stay scheduled.")
+                        break
+                    if not within_hours():
+                        self._emit_state("Outside business hours; remaining queued targets stay scheduled.")
+                        break
+                    if not db.claim_campaign_target(
+                        queue_target_id, self.batch_id or 0,
+                        datetime.now(timezone.utc).isoformat(),
+                    ):
+                        continue
 
                 self.current = {
                     "linkedin_url": job["linkedin_url"],
@@ -386,16 +418,25 @@ class Orchestrator:
                 if not dry_run:
                     # Preview is a snapshot. Another batch may have contacted
                     # this person since it was built, including within this run.
-                    if db.is_already_contacted(job["linkedin_url"], TERMINAL_CONTACTED, self.operator):
+                    if db.is_already_contacted(
+                        job["linkedin_url"], TERMINAL_CONTACTED, self.operator,
+                        exclude_queue_target_id=queue_target_id,
+                    ):
                         self._record(job, ItemStatus.SKIPPED_DEDUP, "contacted since preview",
                                      trace=["skipped before browser action: updated contact history"])
                         continue
                     if governor.daily_cap_reached():
+                        if queue_target_id is not None:
+                            db.release_campaign_target(queue_target_id, self.batch_id or 0)
                         self._emit_state(
                             f"Daily cap of {self.settings.safety.daily_cap} reached. Stopping."
                         )
                         break
-                    if not governor.within_business_hours():
+                    if not within_hours():
+                        if queue_target_id is not None:
+                            db.release_campaign_target(queue_target_id, self.batch_id or 0)
+                            self._emit_state("Outside business hours; remaining queued targets stay scheduled.")
+                            break
                         self._record(job, ItemStatus.NEEDS_ATTENTION, "outside business hours",
                                      trace=["skipped: outside configured business hours"])
                         continue
@@ -403,6 +444,11 @@ class Orchestrator:
                 self._broadcast({"type": "current", **self.current})
 
                 job_action = self._resolve_action(job, action)
+                uncertainty_id = None
+                if queue_target_id is None and not dry_run:
+                    uncertainty_id = db.begin_immediate_attempt(
+                        self.batch_id or 0, self.operator, job["linkedin_url"]
+                    )
                 try:
                     result = await runner.process(
                         job,
@@ -422,8 +468,13 @@ class Orchestrator:
                     raise
                 except Exception as exc:  # noqa: BLE001
                     self._record(job, ItemStatus.FAILED_OTHER, f"error: {exc}",
-                                 trace=[f"exception: {exc}"])
-                    continue
+                                 trace=[f"exception: {exc}"], uncertainty_id=uncertainty_id)
+                    if campaign_id is not None:
+                        db.set_campaign_status(campaign_id, "paused", "Uncertain browser error")
+                        self._emit_state("Scheduled campaign paused after an uncertain browser error.")
+                    else:
+                        self._emit_state("Run stopped after an uncertain browser error.")
+                    break
 
                 self._record(
                     job, result.status, result.detail,
@@ -433,8 +484,21 @@ class Orchestrator:
                     captured_name=result.captured_name,
                     degree=result.degree,
                     headline=result.headline,
+                    uncertainty_id=uncertainty_id,
+                    sent_message=result.sent_message,
                 )
 
+                if campaign_id is not None and result.status in {ItemStatus.FAILED_LIMIT, ItemStatus.FAILED_OTHER}:
+                    db.set_campaign_status(
+                        campaign_id, "paused",
+                        "LinkedIn limit warning" if result.status == ItemStatus.FAILED_LIMIT
+                        else "Uncertain browser result",
+                    )
+                    self._emit_state("Scheduled campaign paused after a limit warning or uncertain browser result.")
+                    break
+                if result.status == ItemStatus.FAILED_OTHER:
+                    self._emit_state("Run stopped after an uncertain browser result.")
+                    break
                 if result.status == ItemStatus.FAILED_LIMIT and self.settings.safety.stop_on_limit_warning:
                     self._emit_state("LinkedIn limit warning. Stopping run to protect the account.")
                     break
@@ -466,6 +530,10 @@ class Orchestrator:
             self._emit_state("Hard stopped.")
         except Exception as exc:
             self.state = RunState.ERROR
+            for campaign_id in {job.get("campaign_id") for job in jobs
+                                if job.get("campaign_id") is not None}:
+                with contextlib.suppress(Exception):
+                    db.set_campaign_status(campaign_id, "paused", "Browser run failed")
             if self.batch_id:
                 with contextlib.suppress(Exception):
                     db.update_batch_counts(
@@ -478,6 +546,16 @@ class Orchestrator:
             self._runner = None
             with contextlib.suppress(Exception):
                 await asyncio.shield(self._force_close(runner))
+            if self.batch_id:
+                with contextlib.suppress(Exception):
+                    db.mark_inflight_targets_uncertain(self.batch_id)
+            for campaign_id in {job.get("campaign_id") for job in jobs if job.get("campaign_id") is not None}:
+                with contextlib.suppress(Exception):
+                    local_date = next((job.get("campaign_local_date") for job in jobs
+                                       if job.get("campaign_id") == campaign_id), None)
+                    if local_date and self.batch_id:
+                        db.release_campaign_day_if_unstarted(campaign_id, local_date, self.batch_id)
+                    db.finish_campaign_if_drained(campaign_id)
             if self.webhook_url:
                 await self._fire_webhook()
 
@@ -554,7 +632,8 @@ class Orchestrator:
         self, job: dict, status: ItemStatus, detail: str,
         *, screenshot: str = "", trace: list | None = None,
         action_executed: str = "", captured_name: str = "", degree: str = "",
-        headline: str = "",
+        headline: str = "", uncertainty_id: int | None = None,
+        sent_message: str | None = None,
     ) -> None:
         full_name = captured_name or job.get("full_name", "")
         req_id, public_id = db.record_outcome(
@@ -570,13 +649,15 @@ class Orchestrator:
             action_executed=action_executed,
             template_id=job.get("template_id"),
             template_name=job.get("template", ""),
-            message_rendered=job.get("message", ""),
+            message_rendered=sent_message if sent_message is not None else job.get("message", ""),
             status=status.value,
             detail=detail,
             decision_trace=trace or [],
             screenshot_path=screenshot,
             headline=headline,
             degree=degree,
+            queue_target_id=job.get("queue_target_id"),
+            uncertainty_id=uncertainty_id,
         )
 
         self.totals["done"] += 1

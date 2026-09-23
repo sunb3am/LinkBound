@@ -126,6 +126,24 @@ class StartRequest(BaseModel):
     ai_voice: str = "auto"  # professional | founder | casual | auto
 
 
+class QueueCampaignRequest(BaseModel):
+    upload_id: str
+    operator: str
+    name: str
+    start_at_local: str
+    timezone: str
+    daily_chunk: int = 25
+    send_on_mismatch: bool = False
+    ai_personalize: bool = False
+    ai_voice: str = "auto"
+
+
+class OutreachReviewRequest(BaseModel):
+    operator: str
+    verdict: str
+    note: str
+
+
 class ResolveNamesRequest(BaseModel):
     upload_id: str
     mode: str = "page"  # "page" (visit profiles, accurate) | "ai" (slug cleanup, fast)

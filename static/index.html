@@ -42,7 +42,7 @@
             <div class="ob-feature"><span class="ob-dot"></span><strong>Templates</strong> — Reusable message templates with variable substitution.</div>
             <div class="ob-feature"><span class="ob-dot"></span><strong>Audience Manager</strong> — Full CRM of every contact you've ever reached out to.</div>
             <div class="ob-feature"><span class="ob-dot"></span><strong>Analytics</strong> — Send volume over time, template performance, and KPIs.</div>
-            <div class="ob-feature"><span class="ob-dot"></span><strong>Sessions</strong> — Run multiple LinkedIn profiles concurrently without crossover.</div>
+            <div class="ob-feature"><span class="ob-dot"></span><strong>Sessions</strong> — Keep separate LinkedIn logins and contact history for each account. One browser operation runs at a time.</div>
           </div>
         </div>
         <!-- Step 2 -->
@@ -170,6 +170,10 @@
           <div class="nav-icon"><i data-lucide="rocket"></i></div>
           <div>Campaigns</div>
         </div>
+        <button class="nav-item nav-button" type="button" data-view="scheduled" id="nav-scheduled" aria-label="Scheduled campaigns">
+          <div class="nav-icon"><i data-lucide="calendar-clock"></i></div>
+          <div>Scheduled</div>
+        </button>
         <div class="nav-item" data-view="templates" id="nav-templates">
           <div class="nav-icon"><i data-lucide="layout-template"></i></div>
           <div>Templates</div>
@@ -426,8 +430,63 @@
               <button class="btn" id="btnBack3">← Back</button>
               <button class="btn candidate" id="btnLaunch">Launch Campaign <i data-lucide="rocket" style="width:16px;"></i></button>
             </div>
+
+            <section class="queue-schedule" aria-labelledby="queueScheduleTitle">
+              <div class="queue-schedule-heading">
+                <div>
+                  <h3 id="queueScheduleTitle">Schedule this campaign</h3>
+                  <p class="hint">Queue the ready contacts to send in daily chunks.</p>
+                  <p class="queue-cap-hint" id="queueWeeklyCapNotice" role="note"></p>
+                </div>
+              </div>
+              <div class="queue-form-grid">
+                <div class="form-group">
+                  <label for="queueName">Campaign name</label>
+                  <input id="queueName" type="text" maxlength="120" autocomplete="off" placeholder="e.g. Product candidates, week 1">
+                </div>
+                <div class="form-group">
+                  <label for="queueStartAt">Start date and time</label>
+                  <input id="queueStartAt" type="datetime-local">
+                </div>
+                <div class="form-group">
+                  <label for="queueTimezone">Time zone</label>
+                  <input id="queueTimezone" type="text" autocomplete="off" spellcheck="false" required>
+                </div>
+                <div class="form-group">
+                  <label for="queueDailyChunk">Contacts per day</label>
+                  <input id="queueDailyChunk" type="number" min="1" max="100" value="25" required>
+                </div>
+              </div>
+              <div id="queueSendNotice" class="queue-send-notice" role="status" hidden>Live sends are disabled on this host. The campaign can be queued, but sending will remain disabled.</div>
+              <div class="queue-schedule-actions">
+                <span class="hint queue-form-message" id="queueFormMessage" role="status" aria-live="polite"></span>
+                <button class="btn candidate" id="btnQueueCampaign" type="button">Queue campaign</button>
+              </div>
+            </section>
           </div>
 
+        </div>
+      </section>
+
+      <!-- ============================================================ SCHEDULED CAMPAIGNS -->
+      <section id="view-scheduled" class="view-panel animate-reveal">
+        <div class="scheduled-header">
+          <div>
+            <h2>Scheduled campaigns</h2>
+            <p class="hint">Queued outreach for the selected LinkedIn session.</p>
+          </div>
+          <button class="btn small" id="scheduledRefresh" type="button" aria-label="Refresh scheduled campaigns"><i data-lucide="refresh-cw" style="width:14px;"></i> Refresh</button>
+        </div>
+        <div id="scheduledLiveNotice" class="queue-send-notice scheduled-notice" role="status" hidden>Live sends are disabled on this host. Scheduled campaigns are paused from sending until live sends are enabled.</div>
+        <section class="outreach-review" aria-labelledby="outreachReviewTitle">
+          <div class="outreach-review-heading">
+            <h3 id="outreachReviewTitle">Needs review</h3>
+            <p class="hint">Check LinkedIn in the account's browser before marking an uncertain action. These profiles stay blocked from new outreach until reviewed.</p>
+          </div>
+          <div id="outreachReviewItems" aria-live="polite"></div>
+        </section>
+        <div id="scheduledCampaigns" aria-live="polite">
+          <div class="queue-empty">Loading scheduled campaigns…</div>
         </div>
       </section>
 

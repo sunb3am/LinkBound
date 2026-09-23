@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timedelta, timezone
+import json
 import re
+import sqlite3
 import uuid
 
 from fastapi import (
@@ -17,15 +21,20 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware import Middleware
 
 from . import csv_ingest, db, voice as voicelib, campaigns, crm, analytics, export
+from .queue_schedule import distribute_due_times
+from .queue_worker import queue_loop
+from .linkedin_urls import canonical_profile_url
 from .access import TailscaleAuthMiddleware
 from .ai import GeminiClient
 from .models import (
     ActionType,
+    QueueCampaignRequest,
+    OutreachReviewRequest,
     AIGenerateRequest,
     AIReviewRequest,
     AITailorRequest,
@@ -55,9 +64,22 @@ settings.operators = {
     for op in db.list_operators()
 }
 
+@asynccontextmanager
+async def app_lifespan(_app):
+    db.mark_inflight_targets_uncertain()
+    task = asyncio.create_task(queue_loop(manager, settings))
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
 app = FastAPI(
     title="LinkBound · LinkedIn Outbound",
     version="2.0.0",
+    lifespan=app_lifespan,
     middleware=[Middleware(
         TailscaleAuthMiddleware,
         enabled=settings.require_tailscale_auth,
@@ -112,9 +134,10 @@ def _make_resolver(default: tuple[int | None, str, str]):
 
 
 def _build_preview_response(operator: str, action: ActionType, preview_rows, jobs, notes,
-                            csv_name: str) -> PreviewResponse:
+                            csv_name: str, source_bytes: bytes = b"") -> PreviewResponse:
     upload_id = uuid.uuid4().hex
-    _UPLOADS[upload_id] = {"operator": operator, "csv_name": csv_name, "jobs": jobs}
+    _UPLOADS[upload_id] = {"operator": operator, "action": action.value,
+                           "csv_name": csv_name, "source_bytes": source_bytes, "jobs": jobs}
     sendable = sum(1 for j in jobs if j["precomputed_status"] == "queued")
     already = sum(1 for j in jobs if j["precomputed_status"] == "skipped_dedup")
     attention = sum(1 for j in jobs if j["precomputed_status"] == "needs_attention")
@@ -150,6 +173,7 @@ async def get_config():
         },
         "safety": {
             "daily_cap": settings.safety.daily_cap,
+            "queue_weekly_cap": settings.safety.queue_weekly_cap,
             "min_delay_seconds": settings.safety.min_delay_seconds,
             "max_delay_seconds": settings.safety.max_delay_seconds,
         },
@@ -287,7 +311,7 @@ async def preview(
         action=act, resolve_template=resolver, template_keys=template_keys,
     )
     return _build_preview_response(operator, act, preview_rows, jobs, notes,
-                                   file.filename or "upload.csv")
+                                   file.filename or "upload.csv", raw)
 
 
 @app.post("/api/preview-urls", response_model=PreviewResponse)
@@ -309,7 +333,124 @@ async def preview_urls(req: UrlsPreviewRequest):
     )
     if not preview_rows:
         raise HTTPException(400, notes[0] if notes else "No valid LinkedIn URLs found.")
-    return _build_preview_response(req.operator, act, preview_rows, jobs, notes, "direct_urls")
+    return _build_preview_response(req.operator, act, preview_rows, jobs, notes,
+                                   "direct_urls.txt", req.urls_text.encode("utf-8"))
+
+
+@app.post("/api/queue")
+async def queue_campaign(req: QueueCampaignRequest):
+    upload = _UPLOADS.get(req.upload_id)
+    if not upload:
+        raise HTTPException(404, "Preview expired. Upload the list again.")
+    if upload["operator"] != req.operator:
+        raise HTTPException(400, "Operator does not match the previewed batch.")
+    if not req.name.strip():
+        raise HTTPException(400, "Campaign name is required.")
+    if req.daily_chunk > settings.safety.daily_cap:
+        raise HTTPException(400, "Daily chunk exceeds this host's configured daily cap.")
+    if req.ai_personalize and not gemini.available:
+        raise HTTPException(400, "AI personalization requested but AI is not enabled/configured.")
+
+    sendable = []
+    rejected = []
+    seen_urls = set()
+    for job in upload["jobs"]:
+        if job["precomputed_status"] != "queued":
+            rejected.append({"row": job["row_index"] + 1, "reason": job["precomputed_status"],
+                             "issues": job.get("issues", [])})
+            continue
+        try:
+            canonical = canonical_profile_url(job["linkedin_url"])
+        except ValueError as exc:
+            rejected.append({"row": job["row_index"] + 1, "reason": "invalid_linkedin_url",
+                             "issues": [str(exc)]})
+            continue
+        key = db.normalize_url(canonical)
+        if key in seen_urls:
+            rejected.append({"row": job["row_index"] + 1, "reason": "duplicate_in_upload",
+                             "issues": ["This LinkedIn profile appeared earlier in the same upload."]})
+            continue
+        seen_urls.add(key)
+        sendable.append({**job, "linkedin_url": canonical})
+    if not sendable:
+        raise HTTPException(400, "No sendable LinkedIn profiles remain after validation.")
+    try:
+        due = distribute_due_times(req.start_at_local, req.timezone, req.daily_chunk, len(sendable))
+        if datetime.fromisoformat(due[0]) < datetime.now(timezone.utc) - timedelta(minutes=1):
+            raise ValueError("Start time must be now or in the future")
+        campaign_id = db.create_queued_campaign(
+            req.operator, req.name.strip(), upload["action"], req.timezone,
+            req.daily_chunk, due[0],
+            [{"job": job, "available_at_utc": scheduled} for job, scheduled in zip(sendable, due)],
+            source_name=upload["csv_name"], source_bytes=upload["source_bytes"],
+            validation_json=json.dumps(rejected),
+            run_options_json=json.dumps({"send_on_mismatch": req.send_on_mismatch,
+                                         "ai_personalize": req.ai_personalize,
+                                         "ai_voice": req.ai_voice}),
+        )
+    except (ValueError, sqlite3.IntegrityError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    _UPLOADS.pop(req.upload_id, None)
+    return {"campaign_id": campaign_id, "queued": len(sendable), "excluded": len(rejected),
+            "first_due_at_utc": due[0], "live_sends_enabled": settings.allow_live_sends}
+
+
+@app.get("/api/queue")
+async def list_queue(operator: str):
+    return {"campaigns": db.list_queued_campaigns(operator)}
+
+
+@app.get("/api/queue/{campaign_id}")
+async def queue_detail(campaign_id: int, operator: str):
+    campaign = db.get_queued_campaign(campaign_id, operator)
+    if campaign is None:
+        raise HTTPException(404, "Queued campaign not found for this account.")
+    return {"campaign": campaign, "targets": db.list_campaign_targets(campaign_id)}
+
+
+@app.get("/api/queue/{campaign_id}/source")
+async def queue_source(campaign_id: int, operator: str):
+    source = db.get_campaign_source(campaign_id, operator)
+    if source is None:
+        raise HTTPException(404, "Queued campaign not found for this account.")
+    name, original = source
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", name) or "source.csv"
+    return Response(
+        content=original, media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+    )
+
+
+@app.post("/api/queue/{campaign_id}/{operation}")
+async def queue_control(campaign_id: int, operation: str, operator: str):
+    if operation not in {"pause", "resume", "cancel"}:
+        raise HTTPException(404, "Unknown queue operation.")
+    if db.get_queued_campaign(campaign_id, operator) is None:
+        raise HTTPException(404, "Queued campaign not found for this account.")
+    status = {"pause": "paused", "resume": "queued", "cancel": "cancelled"}[operation]
+    try:
+        db.set_campaign_status(campaign_id, status)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"campaign_id": campaign_id, "status": status}
+
+
+@app.get("/api/outreach/review")
+async def list_outreach_review(operator: str):
+    return {"items": db.list_unresolved_outreach(operator)}
+
+
+@app.post("/api/outreach/review/{uncertainty_id}")
+async def review_outreach(uncertainty_id: int, req: OutreachReviewRequest):
+    try:
+        reviewed = db.review_outreach_uncertainty(
+            uncertainty_id, req.operator, req.verdict, req.note
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not reviewed:
+        raise HTTPException(404, "Unresolved outreach not found for this account.")
+    return {"id": uncertainty_id, "verdict": req.verdict}
 
 
 # ---- run control ----------------------------------------------------------

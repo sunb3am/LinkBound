@@ -43,6 +43,7 @@ class ProfileResult:
     headline: str = ""
     location: str = ""
     trace: list[str] = field(default_factory=list)
+    sent_message: str | None = None
 
 
 class LinkedInRunner:
@@ -494,7 +495,8 @@ class LinkedInRunner:
             pending = await self._pending_visible(page)
             shot = await self._screenshot(page, job, "sent" if pending else "no_pending")
             if pending:
-                return ProfileResult(ItemStatus.SENT, "connection request sent (no note)", shot, trace=trace)
+                return ProfileResult(ItemStatus.SENT, "connection request sent (no note)", shot,
+                                     trace=trace, sent_message="")
             return ProfileResult(ItemStatus.FAILED_OTHER,
                                  "invite submitted but Pending not confirmed", shot, trace=trace)
 
@@ -516,7 +518,8 @@ class LinkedInRunner:
             pending = await self._pending_visible(page)
             shot = await self._screenshot(page, job, "sent" if pending else "no_pending")
             if pending:
-                return ProfileResult(ItemStatus.SENT, "connection request sent with note", shot, trace=trace)
+                return ProfileResult(ItemStatus.SENT, "connection request sent with note", shot,
+                                     trace=trace, sent_message=message)
             return ProfileResult(ItemStatus.FAILED_OTHER,
                                  "invite submitted but Pending not confirmed", shot, trace=trace)
 
@@ -539,7 +542,8 @@ class LinkedInRunner:
         pending = await self._pending_visible(page)
         shot = await self._screenshot(page, job, "sent_no_note" if pending else "no_pending")
         if pending:
-            return ProfileResult(ItemStatus.SENT, "request sent WITHOUT note (note unavailable)", shot, trace=trace)
+            return ProfileResult(ItemStatus.SENT, "request sent WITHOUT note (note unavailable)", shot,
+                                 trace=trace, sent_message="")
         return ProfileResult(ItemStatus.FAILED_OTHER,
                              "could not add note and plain invite not confirmed", shot, trace=trace)
 
@@ -841,7 +845,7 @@ class LinkedInRunner:
         if sent_ok:
             status = ItemStatus.INMAIL_SENT if is_inmail else ItemStatus.MESSAGE_SENT
             detail = "InMail sent (non-connection)" if is_inmail else "direct message sent (already connected)"
-            return ProfileResult(status, detail, shot, trace=trace)
+            return ProfileResult(status, detail, shot, trace=trace, sent_message=message)
         return ProfileResult(ItemStatus.FAILED_OTHER, f"{kind} typed but send not confirmed", shot, trace=trace)
 
     async def _fill_inmail_subject(self, scope, subject: str, trace: list[str]) -> None:

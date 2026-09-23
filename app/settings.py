@@ -41,6 +41,7 @@ class OperatorConfig:
 @dataclass
 class SafetyConfig:
     daily_cap: int = 22
+    queue_weekly_cap: int = 100
     min_delay_seconds: int = 45
     max_delay_seconds: int = 90
     business_hours_only: bool = False

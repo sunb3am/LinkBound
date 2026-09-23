@@ -151,6 +151,7 @@ function gotoView(viewName, { persist = true } = {}) {
 
   const labels = {
     campaigns: "Campaigns",
+    scheduled: "Scheduled",
     templates: "Templates",
     run: "Live Run",
     crm: "Audience Manager",
@@ -163,6 +164,7 @@ function gotoView(viewName, { persist = true } = {}) {
   if (viewName === "templates") loadTemplates();
   if (viewName === "crm")       loadHistory();
   if (viewName === "batches")   loadBatches();
+  if (viewName === "scheduled") loadScheduledCampaigns();
   if (viewName === "analytics") loadAnalytics();
   if (viewName === "settings")  loadOperators();
   if (viewName === "run")       refreshRunStatus();
@@ -184,6 +186,12 @@ async function loadConfig() {
   dryRun.checked = sendsDisabled || dryRun.checked;
   dryRun.disabled = sendsDisabled;
   $("#sendModeNotice").hidden = !sendsDisabled;
+  $("#queueSendNotice").hidden = !sendsDisabled;
+  $("#scheduledLiveNotice").hidden = !sendsDisabled;
+  const weeklyCap = Number(state.config.safety?.queue_weekly_cap);
+  $("#queueWeeklyCapNotice").textContent = Number.isFinite(weeklyCap) && weeklyCap > 0
+    ? `This host allows up to ${weeklyCap} confirmed sends in any rolling 7 days. Larger chunks can defer later sends.`
+    : "";
   const sel = $("#operator");
   sel.innerHTML = "";
 
@@ -263,6 +271,7 @@ $("#operator").addEventListener("change", () => {
   if (state.activeView === "crm") loadHistory();
   if (state.activeView === "run") refreshRunStatus();
   if (state.activeView === "batches") loadBatches();
+  if (state.activeView === "scheduled") loadScheduledCampaigns();
   if (state.activeView === "analytics") loadAnalytics();
   // Cancel any in-progress name edit
   $("#opNameEditRow").classList.add("hidden");
@@ -581,6 +590,317 @@ $("#btnLaunch").addEventListener("click", async () => {
     lucide.createIcons();
   }
 });
+
+// ─── Scheduled campaigns ──────────────────────────────────────────────────
+function setDefaultQueueSchedule() {
+  try { $("#queueTimezone").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; }
+  catch (_) { $("#queueTimezone").value = "UTC"; }
+  const start = new Date();
+  start.setMinutes(Math.ceil((start.getMinutes() + 1) / 15) * 15, 0, 0);
+  const localValue = new Date(start.getTime() - start.getTimezoneOffset() * 60000)
+    .toISOString().slice(0, 16);
+  $("#queueStartAt").value = localValue;
+}
+setDefaultQueueSchedule();
+
+$("#btnQueueCampaign").addEventListener("click", async () => {
+  const message = $("#queueFormMessage");
+  const btn = $("#btnQueueCampaign");
+  const name = $("#queueName").value.trim();
+  const startAt = $("#queueStartAt").value;
+  const timezone = $("#queueTimezone").value.trim();
+  const dailyChunk = Number($("#queueDailyChunk").value);
+  message.textContent = "";
+  message.classList.remove("error");
+
+  if (!state.uploadId || !state.operator) {
+    message.textContent = "Preview a contact list before scheduling it.";
+    message.classList.add("error");
+    return;
+  }
+  if (!name || !startAt || !timezone || !Number.isInteger(dailyChunk) || dailyChunk < 1 || dailyChunk > 100) {
+    message.textContent = "Enter a name, start time, time zone, and a daily amount from 1 to 100.";
+    message.classList.add("error");
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "Queueing…";
+  try {
+    const result = await api("/api/queue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        upload_id: state.uploadId,
+        operator: state.operator,
+        name,
+        start_at_local: startAt,
+        timezone,
+        daily_chunk: dailyChunk,
+        send_on_mismatch: $("#sendOnMismatch").checked,
+        ai_personalize: $("#aiPersonalize").checked,
+        ai_voice: $("#aiVoice").value,
+      }),
+    });
+    state.uploadId = null;
+    message.textContent = `${result.queued} queued, ${result.excluded} excluded. First due ${formatQueueDateTime(result.first_due_at_utc, timezone)}.`;
+    showToast(result.live_sends_enabled === false
+      ? "Campaign queued. Live sends are disabled on this host."
+      : "Campaign queued.");
+    await loadScheduledCampaigns();
+    gotoView("scheduled");
+    $("#queueName").value = "";
+  } catch (error) {
+    message.textContent = error.message;
+    message.classList.add("error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Queue campaign";
+  }
+});
+
+let scheduledLoadSeq = 0;
+async function loadScheduledCampaigns() {
+  loadOutreachReviews();
+  const seq = ++scheduledLoadSeq;
+  const operator = $("#operator").value;
+  const root = $("#scheduledCampaigns");
+  if (!operator) {
+    root.innerHTML = `<div class="queue-empty"><strong>No session selected</strong>Select a LinkedIn session to view its scheduled campaigns.</div>`;
+    return;
+  }
+  root.innerHTML = `<div class="queue-empty">Loading scheduled campaigns…</div>`;
+  try {
+    const data = await api(`/api/queue?operator=${encodeURIComponent(operator)}`);
+    if (seq !== scheduledLoadSeq || operator !== $("#operator").value) return;
+    const campaigns = data.campaigns || [];
+    if (!campaigns.length) {
+      root.innerHTML = `<div class="queue-empty"><strong>No scheduled campaigns</strong>Preview a contact list, then schedule it from the campaign review step.</div>`;
+      return;
+    }
+    root.innerHTML = `<div class="queue-ledger">${campaigns.map(renderScheduledCampaign).join("")}</div>`;
+  } catch (error) {
+    if (seq !== scheduledLoadSeq) return;
+    root.innerHTML = `<div class="queue-empty"><strong>Could not load scheduled campaigns</strong>${esc(error.message)}</div>`;
+  }
+}
+
+let outreachReviewSeq = 0;
+async function loadOutreachReviews() {
+  const seq = ++outreachReviewSeq;
+  const operator = $("#operator").value;
+  const root = $("#outreachReviewItems");
+  if (!operator) {
+    root.innerHTML = `<div class="queue-empty">Select a session to review uncertain outreach.</div>`;
+    return;
+  }
+  root.innerHTML = `<div class="queue-target-state">Loading review items…</div>`;
+  try {
+    const data = await api(`/api/outreach/review?operator=${encodeURIComponent(operator)}`);
+    if (seq !== outreachReviewSeq || operator !== $("#operator").value) return;
+    const items = data.items || [];
+    if (!items.length) {
+      root.innerHTML = `<div class="queue-target-state">No uncertain outreach for this session.</div>`;
+      return;
+    }
+    root.innerHTML = items.map(item => `<div class="outreach-review-row" data-review-id="${Number(item.id)}">
+      <div class="outreach-review-person"><strong>${esc(item.linkedin_url || "Unknown profile")}</strong>
+        <span>${esc(item.campaign_name || "Immediate run")} · ${esc(item.detail || "Browser action interrupted")}</span></div>
+      <label class="outreach-review-note">What did you verify on LinkedIn?
+        <input type="text" maxlength="500" placeholder="e.g. Invitation visible in Sent" aria-label="Review note for ${esc(item.linkedin_url || "profile")}"></label>
+      <div class="outreach-review-actions">
+        <button type="button" class="btn small" data-verdict="sent">Confirmed sent</button>
+        <button type="button" class="btn small" data-verdict="not_sent">Confirmed not sent</button>
+      </div>
+      <div class="queue-target-state error" role="alert" hidden></div>
+    </div>`).join("");
+  } catch (error) {
+    if (seq !== outreachReviewSeq) return;
+    root.innerHTML = `<div class="queue-target-state error">Could not load review items: ${esc(error.message)}</div>`;
+  }
+}
+
+$("#outreachReviewItems").addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-verdict]");
+  if (!button) return;
+  const row = button.closest("[data-review-id]");
+  const note = row.querySelector("input").value.trim();
+  const error = row.querySelector("[role='alert']");
+  if (!note) {
+    error.textContent = "Add a note describing what you checked in LinkedIn.";
+    error.hidden = false;
+    return;
+  }
+  const verdict = button.dataset.verdict;
+  if (!window.confirm(`Mark this LinkedIn action as ${verdict === "sent" ? "sent" : "not sent"}?`)) return;
+  row.querySelectorAll("button").forEach(control => { control.disabled = true; });
+  try {
+    await api(`/api/outreach/review/${Number(row.dataset.reviewId)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({operator: $("#operator").value, verdict, note}),
+    });
+    showToast("Review recorded. Paused campaigns stay paused until resumed.");
+    await loadScheduledCampaigns();
+  } catch (failure) {
+    error.textContent = failure.message;
+    error.hidden = false;
+    row.querySelectorAll("button").forEach(control => { control.disabled = false; });
+  }
+});
+
+function renderScheduledCampaign(campaign) {
+  const status = String(campaign.status || "unknown").replace(/_/g, " ");
+  const canPause = campaign.status === "queued";
+  const canResume = campaign.status === "paused";
+  const canCancel = ["queued", "paused"].includes(campaign.status);
+  const due = campaign.next_due_at_utc
+    ? formatQueueDateTime(campaign.next_due_at_utc, campaign.timezone)
+    : "None scheduled";
+  return `<article class="queue-row" data-campaign-id="${Number(campaign.id)}">
+    <div>
+      <div class="queue-campaign-name">${esc(campaign.name || "Untitled campaign")}</div>
+      <div class="queue-source-name">Source: ${esc(campaign.source_name || "Not available")}</div>
+    </div>
+    <div>
+      <div class="queue-status-line"><span class="queue-status-text">${esc(status)}</span><span class="hint">${esc(campaign.timezone || "")}</span></div>
+      ${campaign.pause_reason ? `<div class="queue-pause-reason">${esc(campaign.pause_reason)}</div>` : ""}
+      <div class="queue-counts" aria-label="Campaign contact counts">
+        <span>${Number(campaign.queued || 0)} queued</span><span>${Number(campaign.sending || 0)} sending</span>
+        <span>${Number(campaign.sent || 0)} sent</span><span>${Number(campaign.skipped || 0)} skipped</span>
+        <span>${Number(campaign.failed || 0)} failed</span><span>${Number(campaign.uncertain || 0)} uncertain</span>
+        <span>${Number(campaign.cancelled || 0)} cancelled</span><span>${Number(campaign.total || 0)} total</span>
+      </div>
+    </div>
+    <div class="queue-meta"><div><strong>Daily chunk:</strong> ${Number(campaign.daily_chunk || 0)}</div><div><strong>Next due:</strong> ${esc(due)}</div></div>
+    <div class="queue-controls">
+      <button type="button" class="btn small" data-queue-action="targets" aria-expanded="false" aria-controls="queue-targets-${Number(campaign.id)}">View targets</button>
+      ${canPause ? `<button type="button" class="btn small" data-queue-action="pause" aria-label="Pause ${esc(campaign.name || "campaign")}">Pause</button>` : ""}
+      ${canResume ? `<button type="button" class="btn small" data-queue-action="resume" aria-label="Resume ${esc(campaign.name || "campaign")}">Resume</button>` : ""}
+      ${canCancel ? `<button type="button" class="btn small danger" data-queue-action="cancel" aria-label="Cancel ${esc(campaign.name || "campaign")}">Cancel</button>` : ""}
+      <button type="button" class="btn small" data-queue-action="source" aria-label="Download source for ${esc(campaign.name || "campaign")}" data-source-name="${esc(campaign.source_name || "source.csv")}">Download source</button>
+    </div>
+    <div class="queue-targets hidden" id="queue-targets-${Number(campaign.id)}" data-targets-for="${Number(campaign.id)}" aria-live="polite"></div>
+  </article>`;
+}
+
+function formatQueueDateTime(value, timezone) {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      year: "numeric", month: "short", day: "numeric", hour: "numeric",
+      minute: "2-digit", timeZone: timezone, timeZoneName: "short",
+    }).format(new Date(value));
+  } catch (_) {
+    return `${formatDateTime(value)} UTC`;
+  }
+}
+
+$("#scheduledRefresh").addEventListener("click", loadScheduledCampaigns);
+$("#scheduledCampaigns").addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-queue-action]");
+  if (!button) return;
+  const row = button.closest("[data-campaign-id]");
+  const campaignId = Number(row?.dataset.campaignId);
+  const operation = button.dataset.queueAction;
+  const operator = $("#operator").value;
+  if (!campaignId || !operator) return;
+  if (operation === "targets") {
+    const targetPanel = row.querySelector("[data-targets-for]");
+    const expanded = button.getAttribute("aria-expanded") === "true";
+    if (expanded) {
+      button.setAttribute("aria-expanded", "false");
+      button.textContent = "View targets";
+      targetPanel.classList.add("hidden");
+      return;
+    }
+    button.setAttribute("aria-expanded", "true");
+    button.textContent = "Hide targets";
+    targetPanel.classList.remove("hidden");
+    if (targetPanel.dataset.loaded === "true") return;
+    targetPanel.innerHTML = `<div class="queue-target-state">Loading targets…</div>`;
+    button.disabled = true;
+    try {
+      const data = await api(`/api/queue/${campaignId}?operator=${encodeURIComponent(operator)}`);
+      if (operator !== $("#operator").value) return;
+      renderQueueTargets(targetPanel, data.campaign || {}, data.targets || []);
+      targetPanel.dataset.loaded = "true";
+    } catch (error) {
+      targetPanel.innerHTML = `<div class="queue-target-state error">Could not load targets: ${esc(error.message)}</div>`;
+      button.setAttribute("aria-expanded", "true");
+      button.textContent = "Hide targets";
+    } finally {
+      button.disabled = false;
+    }
+    return;
+  }
+  if (operation === "cancel" && !window.confirm("Cancel this scheduled campaign? Contacts not yet sent will stay unsent.")) return;
+  button.disabled = true;
+  try {
+    if (operation === "source") {
+      const response = await fetch(`/api/queue/${campaignId}/source?operator=${encodeURIComponent(operator)}`);
+      if (!response.ok) {
+        let detail = response.statusText;
+        try { detail = (await response.json()).detail || detail; } catch (_) {}
+        throw new Error(detail);
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = button.dataset.sourceName || "source.csv";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } else {
+      await api(`/api/queue/${campaignId}/${operation}?operator=${encodeURIComponent(operator)}`, { method: "POST" });
+      showToast(`Campaign ${operation === "cancel" ? "cancelled" : operation === "pause" ? "paused" : "resumed"}.`);
+    }
+    await loadScheduledCampaigns();
+  } catch (error) {
+    showToast(error.message, "error");
+    button.disabled = false;
+  }
+});
+
+function renderQueueTargets(panel, campaign, targets) {
+  if (!targets.length) {
+    panel.innerHTML = `<div class="queue-target-state">No targets are available for this campaign.</div>`;
+    return;
+  }
+  const visible = targets.slice(0, 100);
+  const rows = visible.map((target) => {
+    const job = target.job || {};
+    const name = job.full_name || [job.first_name, job.last_name].filter(Boolean).join(" ") || job.first_name || "Name unavailable";
+    const linkedinUrl = String(target.linkedin_url || job.linkedin_url || "");
+    const href = safeLinkedInHref(linkedinUrl);
+    const person = href
+      ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(name)}</a>`
+      : `<span>${esc(name)}</span>`;
+    const urlText = linkedinUrl ? esc(linkedinUrl) : "LinkedIn URL unavailable";
+    const due = target.available_at_utc
+      ? formatQueueDateTime(target.available_at_utc, campaign.timezone)
+      : "Not scheduled";
+    return `<div class="queue-target-row">
+      <div class="queue-target-person">${person}<span class="queue-target-url">${urlText}</span></div>
+      <div class="queue-target-state-text">${esc(String(target.state || "unknown").replace(/_/g, " "))}</div>
+      <div class="queue-target-due">${esc(due)}</div>
+      <div class="queue-target-detail">${esc(target.detail || "") || "No additional detail"}</div>
+    </div>`;
+  }).join("");
+  const remainder = targets.length > visible.length
+    ? `<div class="queue-target-limit">Showing the first ${visible.length} of ${targets.length} targets.</div>`
+    : "";
+  panel.innerHTML = `<div class="queue-target-summary">${targets.length} target${targets.length === 1 ? "" : "s"}</div><div class="queue-target-list">${rows}</div>${remainder}`;
+}
+
+function safeLinkedInHref(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && (url.hostname === "linkedin.com" || url.hostname.endsWith(".linkedin.com"))
+      ? url.href
+      : "";
+  } catch (_) {
+    return "";
+  }
+}
 
 // ─── Templates View ────────────────────────────────────────────────────────
 async function loadTemplates() {
