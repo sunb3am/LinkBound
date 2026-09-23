@@ -18,8 +18,8 @@ unit_file="/etc/systemd/system/linkbound-app.service"
   exit 2
 }
 
-# Phase B is a no-send deployment. Revisit this gate only after the owner has
-# reviewed the hosted risk pilot and Release C stop controls are in place.
+# Keep hosted sends disabled until the owner reviews the risk pilot and a
+# controlled headed regression verifies the stop controls.
 set -a
 source "$env_file"
 set +a
@@ -49,8 +49,7 @@ previous="$(readlink -f "$current" || true)"
 was_active=0
 if systemctl is-active --quiet linkbound-app.service; then
   was_active=1
-  # Active work must finish before the old process is stopped. This release
-  # has no durable queue, so no automatic interruption or retry is safe.
+  # Active browser work must finish before the old process is stopped.
   status="$(curl --silent --show-error --fail --max-time 5 \
     -H "Tailscale-User-Login: $owner_login" http://127.0.0.1:8000/api/v1/health)"
   if ! python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(1 if s.get("busy") is not False else 0)' <<< "$status"; then
@@ -158,7 +157,7 @@ for attempt in $(seq 1 30); do
 done
 [[ "$ready" -eq 1 ]]
 systemctl is-active --quiet linkbound-app.service
-"$release/.venv/bin/python" -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); assert c.execute("PRAGMA user_version").fetchone()[0] == 2' "$LINKBOUND_DATA_DIR/outbound.db"
+"$release/.venv/bin/python" -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); assert c.execute("PRAGMA user_version").fetchone()[0] == 5' "$LINKBOUND_DATA_DIR/outbound.db"
 
 mkdir -p /var/log/linkbound
 printf '%s commit=%s previous=%s snapshot=%s result=success\n' \
