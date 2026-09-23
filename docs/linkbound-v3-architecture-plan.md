@@ -20,9 +20,9 @@ LinkBound becomes a continuously available internal outbound operations system. 
 
 ## Scope guardrails
 
-The [CRM benchmark](linkbound-v3-crm-benchmark.md) gives useful logical distinctions. It is a reference catalog, not a list of tables to implement. The first version serves one app user, a few LinkedIn sender accounts, one outbound action per campaign, daily read-only sync, and one Cruitical handoff. Keep the existing Playwright send path and `sqlite3` persistence. Add a table only when a requested workflow needs independent state or a database constraint.
+The [CRM benchmark](linkbound-v3-crm-benchmark.md) gives useful logical distinctions. It is a reference catalog, not a list of tables to implement. The first version serves one app user, a few LinkedIn sender accounts, one outbound action per campaign, daily no-send sync, and one Cruitical handoff. Keep the existing Playwright send path and `sqlite3` persistence. Add a table only when a requested workflow needs independent state or a database constraint.
 
-The first technical proof is a headed Chrome pilot on Linode with one account, persistent profile, and read-only navigation. It happens before a large queue or CRM build. A new IP and Linux environment may change account behavior; the pilot cannot guarantee the present account experience. If it succeeds, host the app, browser, SQLite, and attachments on one private Linode VM. If it fails, a Linode dashboard with the current local browser is a fallback, with the explicit limitation that scheduled sends and sync stop when the local machine is offline. A remote worker protocol is built only if that fallback becomes necessary.
+The first technical proof is a headed Chrome pilot on Linode with one account, persistent profile, and no-send navigation. It happens before a large queue or CRM build. A new IP and Linux environment may change account behavior; the pilot cannot guarantee the present account experience. If it succeeds, host the app, browser, SQLite, and attachments on one private Linode VM. If it fails, a Linode dashboard with the current local browser is a fallback, with the explicit limitation that scheduled sends and sync stop when the local machine is offline. A remote worker protocol is built only if that fallback becomes necessary.
 
 ```mermaid
 flowchart LR
@@ -90,7 +90,7 @@ Receiving a file or accepting a request updates LinkBound's CRM view. It does no
 
 Run the app behind private HTTPS access, initially Tailscale Serve restricted to Shubham's devices. Add an app session for the human UI and a scoped service token when the Cruitical integration ships. Authenticate WebSocket, exports, file downloads, and all run controls. Do not expose VNC, Chrome DevTools, or a browser debugging port publicly. Chrome profile directories are credentials; restrict permissions and keep them outside the repository. Back up the database and attachments to an encrypted offsite location, and handle profile backups as credential material. Verify restore, not just backup creation.
 
-The early Linode browser pilot uses a non-root service account, a version-matched Playwright installation, the browser channel actually installed, Xvfb for headed Chrome, and a persistent profile directory for one account. Add private remote desktop access if login challenges require it. A process restart reclaims expired leases and marks possible sends `uncertain`; it never restarts them blindly.
+The early Linode browser pilot uses a non-root service account, a version-matched Playwright installation, the browser channel actually installed, a virtual X display, and a persistent profile directory for one account. Prefer TigerVNC Xvnc as the display server so the same headed Chrome desktop can be viewed through noVNC and websockify. Bind the viewer to localhost and expose its HTTPS endpoint only through Tailscale Serve with a narrow access grant and separate VNC authentication. Keep this browser-view URL distinct from the LinkBound dashboard. A manual browser session selects one account, waits for active work to finish, acquires its profile lock, and pauses that account's scheduled jobs until the session closes. A process restart reclaims expired leases and marks possible sends `uncertain`; it never restarts them blindly.
 
 ## UI direction
 
@@ -116,7 +116,7 @@ The browser feasibility pilot comes before major queue work because always-on ho
 1. Should the same person be suppressed across all LinkedIn accounts by default, or only within each account? Recommended: global suppression for outbound, with an explicit reviewed override.
 2. Should the first inbound sync cover only LinkBound campaign contacts, or every conversation in each account? Recommended: campaign contacts first, with unmatched conversations listed for review.
 3. What counts as permission to add a candidate to Cruitical's network after a resume arrives? Recommended: explicit candidate agreement or a reviewed promotion until the permission wording and API contract are settled.
-4. Is a Linode VM browser pilot acceptable even though a headed browser on a new IP cannot preserve the current account behavior as a guarantee? Recommended: test read-only navigation early and keep the known local setup as the fallback.
+4. Is a Linode VM browser pilot acceptable even though a headed browser on a new IP cannot preserve the current account behavior as a guarantee? Recommended: test no-send navigation early and keep the known local setup as the fallback.
 5. Is private Tailscale access acceptable for the internal web UI, or must it open in any browser without a VPN client? Recommended: Tailscale for the first deployment.
 
 ## Primary references
@@ -125,4 +125,5 @@ The browser feasibility pilot comes before major queue work because always-on ho
 - [Playwright persistent browser contexts](https://playwright.dev/python/docs/api/class-browsertype), [headed Linux CI](https://playwright.dev/docs/ci), [Docker guidance](https://playwright.dev/python/docs/docker), and [downloads](https://playwright.dev/python/docs/api/class-download)
 - [Akamai compute plans](https://techdocs.akamai.com/cloud-computing/docs/how-to-choose-a-compute-instance-plan), [backup service](https://techdocs.akamai.com/cloud-computing/docs/backup-service), and [cloud firewall](https://techdocs.akamai.com/cloud-computing/docs/create-a-cloud-firewall)
 - [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) and [access control](https://tailscale.com/docs/features/access-control)
+- [TigerVNC virtual display and server](https://github.com/TigerVNC/tigervnc), [noVNC browser client](https://github.com/novnc/noVNC), and [Apache Guacamole remote desktop gateway](https://guacamole.apache.org/doc/gug/guacamole-architecture.html)
 - Cruitical product repository `origin/main` at `d946a75e`, especially `apps/backend/api/admin_users.py`, `apps/backend/core/resume.py`, and `apps/backend/core/candidate_analysis.py`
