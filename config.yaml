@@ -64,7 +64,7 @@ browser:
   # "chrome" uses the installed Google Chrome channel. Use "chromium" to fall
   # back to Playwright's bundled Chromium if Chrome is not installed.
   channel: "chrome"
-  headless: false # must be false: headed is safer and 2FA needs UI
+  headless: false # headed for the visible browser and manual 2FA; not a detection guarantee
   # Optional: connect to an existing browser over CDP (managed/remote browser).
   # Leave empty for local. Example: "ws://127.0.0.1:9222/..." or a CDP http URL.
   cdp_url: ""
