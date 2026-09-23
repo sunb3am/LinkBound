@@ -42,17 +42,22 @@ def test_snapshot_preserves_screenshots_and_uploaded_files(tmp_path):
     uploads = tmp_path / "uploads"
     screenshots.mkdir()
     uploads.mkdir()
+    inbound_files = tmp_path / "inbound_files"
+    inbound_files.mkdir()
     (screenshots / "proof.png").write_bytes(b"image")
     (uploads / "source.csv").write_text("name\nPerson\n", encoding="utf-8")
+    (inbound_files / "resume.pdf").write_bytes(b"%PDF-1.4\n")
 
     output = tmp_path / "snapshot"
-    snapshot_state(database, output, screenshots=screenshots, uploads=uploads)
+    snapshot_state(database, output, screenshots=screenshots, uploads=uploads,
+                   inbound_files=inbound_files)
     verify_snapshot(output)
     restored = tmp_path / "restored"
     restore_snapshot(output, restored)
 
     assert (restored / "screenshots" / "proof.png").read_bytes() == b"image"
     assert (restored / "uploads" / "source.csv").read_text(encoding="utf-8") == "name\nPerson\n"
+    assert (restored / "inbound_files" / "resume.pdf").read_bytes() == b"%PDF-1.4\n"
 
 
 def test_verify_rejects_tampering_and_unlisted_files(tmp_path):

@@ -238,6 +238,9 @@ from pydantic import BaseModel
 class OperatorCreate(BaseModel):
     name: str
 
+class OperatorIdentityUpdate(BaseModel):
+    linkedin_url: str
+
 @app.get("/api/operators")
 async def get_operators():
     return {"operators": db.list_operators()}
@@ -261,6 +264,17 @@ async def create_operator(body: OperatorCreate):
     settings.operators[key] = OperatorConfig(key=key, label=name, profile_dir=f"profiles/{key}")
     
     return {"key": key, "label": name}
+
+@app.put("/api/operators/{key}/linkedin-identity")
+async def update_operator_linkedin_identity(key: str, body: OperatorIdentityUpdate):
+    active = manager.active()
+    if active and active.operator == key:
+        raise HTTPException(409, "Wait for this account's browser operation to finish.")
+    try:
+        url = db.set_operator_self_profile_url(key, body.linkedin_url)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"key": key, "linkedin_self_url": url}
 
 @app.delete("/api/operators/{key}")
 async def delete_operator(key: str):

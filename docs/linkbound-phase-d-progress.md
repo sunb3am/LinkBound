@@ -1,35 +1,35 @@
-# Phase D progress: inbound CRM foundation
+# Phase D progress: inbound browser pilot
 
-Phase D is in progress on `codex/linkbound-phase-d`. This branch has not been deployed. The Linode app remains on the Phase C release with live sending disabled.
+Phase D is in progress on `codex/linkbound-phase-d`. This branch is not deployed. The Linode still serves the Phase C release, and live sending remains disabled.
 
-## Implemented in this branch
+## Built in this branch
 
-- Schema version 6 adds account-scoped sync runs, conversations, messages, attachments, and positive relationship observations. A restarted in-progress scan becomes `interrupted`.
-- Ingestion requires stable thread and message keys. A row without a stable thread key counts as unresolved section coverage. Repeated observations update the same record; conflicting keys or file bytes raise an error instead of silently merging people.
-- LinkedIn unread and LinkBound reviewed are separate fields. A changed conversation preview reopens LinkBound review.
-- Positive first-degree evidence can combine with a confirmed invitation to show an accepted milestone. Replied and file-received milestones require an inbound message and saved file on a linked conversation.
-- Private account-scoped routes list sync health, conversations, messages, and file downloads. The Inbox & Sync screen shows partial coverage, unmatched and ambiguous contacts, unread/review status, message details, and files. Bulk export includes a contact CSV, observation records, and original saved bytes, with archive checksums verified.
-- The shared coordinator now reserves the browser for a no-send inbound operation and prevents an outbound run or name-resolution pass from starting alongside it.
-- A focused adversarial review led to four corrections: required section coverage is declared when a run starts, CSV cells are inert in spreadsheets, conflicting attachment bytes leave no new stored file, and unread values accept only a Boolean or unknown.
+- Schema version 9 adds account-scoped sync runs, conversations, messages, attachments, positive connection observations, per-thread unread observations, durable unread open intents, and a unique LinkedIn profile URL binding for each sender. An intent is committed before an unread row is opened because LinkedIn's list row does not expose its thread URL. A later scan can retry an interrupted intent before it opens more threads.
+- Ingestion requires stable thread and message keys for canonical records. Repeated observations update the same record; conflicting keys or file bytes fail instead of silently merging people. A row with uncertain identity is not opened.
+- The Sessions screen saves the expected LinkedIn profile URL. Before any inbox collection or unread recovery, the headed browser reads the signed-in profile from LinkedIn's Me menu and requires an exact match. An unbound account, a mismatch, or a shared CDP context stops the scan. Message direction and contact matching use that verified URL; messages without a usable author URL remain `unknown`.
+- LinkedIn unread and LinkBound reviewed remain separate. The UI shows the last pre-open unread marker and restoration result. A changed preview reopens LinkBound review.
+- Private account-scoped routes and the Inbox & Sync screen list sync coverage, conversations, messages, and saved files. Bulk export includes source records, unread open intents, a contact CSV, and original saved bytes with checksum verification.
+- The coordinator reserves the one headed browser for an inbound operation. The manual collector uses the existing persistent Chrome profile and visible LinkedIn inbox controls. It stops on authentication, a selector change, an unverified unread marker, or a browser failure. Its folder and row coverage are explicitly partial. There is no daily scheduler yet.
+- The backup script includes saved inbound files, and the deployment migration check expects schema version 9. These changes have not been applied to the Linode production database.
 
-## Hosted browser observation
+## Hosted observations on 2026-09-23
 
-On 2026-09-23, with `linkbound-app` stopped to give the Chrome profile exclusive ownership, a no-send Playwright probe opened `https://www.linkedin.com/messaging/`. LinkedIn redirected to a conversation thread automatically while displaying the conversation list. We closed Chrome, removed the probe files, and restarted `linkbound-app`; `systemctl is-active linkbound-app` returned `active`.
+- The `me` Chrome profile is Shubham Srivastava's account. The owner confirmed the signed-in feed after a browser restart.
+- The visible Me menu exposed Shubham's profile URL. Its menu structure was inspected read-only to define the identity check. The new schema 9 identity check has local tests, but it has not been run as part of a hosted inbox scan.
+- `https://www.linkedin.com/messaging/compose/` showed the inbox list without opening a thread. The ordinary Messaging URL auto-selected a thread. A controlled unread thread lost its unread marker when opened; the visible **Mark as unread** action restored that marker. This does not establish that a read receipt was undone.
+- The list row had no `href` or other stable thread key before opening. That is why the collector now saves a visible row identity and folder as an open intent before the click. Recovery requires one exact visible match; ambiguity stops the scan.
+- A bounded scan against an isolated copy of the database collected one Focused conversation. It collected one Other conversation, then Playwright reported `TargetClosedError` during its attachment step. The collector stopped. A fresh headed browser restored the Other unread marker; the copy recorded the intent and thread observation as `restored`. No attachment was saved. This failure has occurred twice in the integrated pilot, while a separate direct download of the same small PDF succeeded once. The cause is not established.
+- Tailscale access to the private app now works. `https://linkbound-01.tailfbed29.ts.net/api/v1/health` returned HTTP 200 and `{"ok":true,"version":"2.0.0","busy":false}` after the pilot. The app service restarted and remains on Phase C.
 
-There was no recorded unread baseline for the auto-selected thread, so this probe does **not** establish whether it changed unread status or sent a read receipt. Do not run a daily thread-opening collector from this evidence alone. LinkedIn Help says unread badges persist until a conversation is opened, and its delivery indicators can show read receipts when enabled: [message indicators](https://www.linkedin.com/help/linkedin/answer/a569649), [mark read or unread](https://www.linkedin.com/help/linkedin/answer/a540960/mark-a-conversation-as-read-or-unread?lang=en), [delivery indicators](https://www.linkedin.com/help/linkedin/answer/a567370).
+## Verification and release gate
 
-## Verification
+`py -m pytest tests -q` passed with 104 tests. `py -m compileall -q app scripts`, `node --check static/app.js`, and `git diff --check` passed. The targeted collector tests cover repeat scans without duplicate records, unread restoration after an attachment failure, stopping on an unverified marker, recovery when Chrome closes before returning the thread URL, and account identity mismatches. The hosted copied database migrated to schema 8 and recorded the pilot without changing the live database. The temporary copied data and pilot probe files were removed after inspection. Schema 9 and its UI have local checks, but no hosted inbox run yet.
 
-- `py -m pytest tests -q`: 90 passed.
-- `py -m compileall -q app`: passed.
-- `node --check static/app.js`: passed.
-- Local Playwright UI check with synthetic conversations: two rows, partial sync coverage, message/file detail, and no page script errors. The local test server was stopped afterward.
-- A temporary copy of the local CRM database migrated to schema 6 with SQLite integrity `ok`; its 623 outbound requests, 12 batches, and 459 contacts remained present. The original database was not modified, and the temporary copy was removed.
+Phase D is not ready for a daily job or production rollout. Next work:
 
-## Remaining before Phase D is usable
+1. Diagnose the integrated `TargetClosedError`, then prove file capture and export with actual bytes in a bounded hosted scan. Preserve the restored unread marker and stop conditions while doing this.
+2. Bind each sender's LinkedIn profile URL in Sessions and verify the schema 9 identity check on the hosted headed browser. Add safe coverage of remaining rendered conversations and message requests, then tracked invitation and positive connection evidence. Make historical and incremental coverage, source timestamps, and uncertain identities explicit.
+3. Add the serialized daily schedule only after browser collection is stable. Run two controlled scans to verify no duplicate messages or files and that unread restoration survives restart.
+4. Verify backup and restore for saved files, add an encrypted offsite copy, and deploy Phase D with a migration and rollback check. Keep hosted sends disabled until the separate account-owner risk decision and controlled send gate in the access risk review.
 
-1. Confirm whose LinkedIn login lives in the hosted `me` profile before associating observations with that account.
-2. Decide whether the daily collector may open unread threads. Record a before/after unread-state observation on the hosted browser.
-3. Inspect actual inbox row and thread structure, then implement bounded browser-only collection across relevant sections, messages, invitations, and file downloads. Stop on login, challenge, restriction, or uncertain selector state.
-4. Add the scheduled daily run and make coverage explicit for every expected section. Complete two controlled scans to prove no duplicate messages or files.
-5. Verify export against real captured file bytes and deploy only after the browser behavior and account mapping are confirmed. Keep live sending disabled.
+LinkedIn operations remain browser-only. The app's own private API is for its UI and CRM exports; it is not a LinkedIn API integration.

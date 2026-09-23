@@ -132,6 +132,7 @@ def snapshot_state(
     attachments: Path | None = None,
     screenshots: Path | None = None,
     uploads: Path | None = None,
+    inbound_files: Path | None = None,
 ) -> None:
     if database.is_symlink():
         raise ValueError(f"Database must not be a symlink: {database}")
@@ -146,6 +147,7 @@ def snapshot_state(
             "attachments": attachments,
             "screenshots": screenshots,
             "uploads": uploads,
+            "inbound_files": inbound_files,
         }.items() if path is not None
     }
     for name, path in file_dirs.items():
@@ -222,6 +224,7 @@ def _parser() -> argparse.ArgumentParser:
     snap.add_argument("--attachments", type=Path, help="Optional attachments directory")
     snap.add_argument("--screenshots", type=Path, help="Optional screenshots directory")
     snap.add_argument("--uploads", type=Path, help="Optional uploads directory")
+    snap.add_argument("--inbound-files", type=Path, help="Optional saved inbox files directory")
     verify = commands.add_parser("verify", help="Verify snapshot file set and SHA256 manifest")
     verify.add_argument("snapshot", type=Path)
     restore = commands.add_parser("restore", help="Restore to a new, nonexistent target directory")
@@ -234,7 +237,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if args.command == "snapshot":
-            snapshot_state(args.database, args.output, args.attachments, args.screenshots, args.uploads)
+            snapshot_state(args.database, args.output, args.attachments, args.screenshots,
+                           args.uploads, args.inbound_files)
             print(f"Snapshot created: {args.output}")
         elif args.command == "verify":
             verify_snapshot(args.snapshot)

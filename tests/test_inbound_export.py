@@ -116,6 +116,26 @@ def test_export_checksum_failure_removes_partial_zip(export_data):
     assert list((export_data / "exports").glob("*.zip")) == []
 
 
+def test_export_includes_only_own_unread_open_intents(export_data):
+    own_run = inbound_store.start_sync_run("sender_a", expected_sections=("focused",))
+    inbound_store.record_open_intent("sender_a", own_run, "focused", "Own person", "Own preview")
+    inbound_store.finish_sync_run(own_run)
+    other_run = inbound_store.start_sync_run("sender_b", expected_sections=("focused",))
+    inbound_store.record_open_intent("sender_b", other_run, "focused", "Other person", "Other preview")
+    inbound_store.finish_sync_run(other_run)
+
+    path = inbound_export.build_export("sender_a", export_data)
+    try:
+        with zipfile.ZipFile(path) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+            intents = manifest["inbox_open_intents"]
+            assert len(intents) == 1
+            assert intents[0]["participant_name"] == "Own person"
+            assert "Other person" not in archive.read("manifest.json").decode()
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def test_export_neutralizes_spreadsheet_formulas(export_data):
     _create_conversation(export_data, "sender_a", "formula", "=HYPERLINK(\"https://example.com\")")
     path = inbound_export.build_export("sender_a", export_data)

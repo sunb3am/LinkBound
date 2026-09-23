@@ -761,9 +761,9 @@
           <div class="card" style="grid-column: span 2;">
             <div class="card-title" style="display: flex; align-items: center; gap: 8px;">
               Sessions (Operators)
-              <span class="info-bubble" data-tooltip="Each Session corresponds to one LinkedIn account. Sessions are fully isolated — separate Chrome profile, login cookies, dedup history, and rate limits. You can run multiple sessions concurrently without crossover.">?</span>
+              <span class="info-bubble" data-tooltip="Each session has its own Chrome profile, login, and contact history. Browser work runs one account at a time. Inbox scans verify the signed-in LinkedIn profile before reading messages.">?</span>
             </div>
-            <div class="hint" style="margin-bottom: 24px;">Create one session per LinkedIn account you manage. On first run, a Chrome window opens for login. After that, the session persists automatically.</div>
+            <div class="hint" style="margin-bottom: 24px;">Create one session per LinkedIn account. After login, save the account's LinkedIn profile URL here so inbox scans can confirm which account is open.</div>
 
             <div class="sessions-create-row">
               <input type="text" id="newOpName" placeholder="Full name (e.g. Alex Johnson)" style="flex-grow: 1;">
@@ -777,6 +777,7 @@
                     <th>Key</th>
                     <th>Display Name</th>
                     <th>Browser Profile</th>
+                    <th>LinkedIn Profile</th>
                     <th>Created</th>
                     <th style="width: 120px;">Actions</th>
                   </tr>

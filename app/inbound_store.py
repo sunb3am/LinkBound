@@ -147,6 +147,215 @@ def record_inventory_section(
     return counts
 
 
+def record_scan_observation(
+    operator: str, run_id: int, thread_key: str, unread_before_open: bool | None,
+) -> None:
+    """Attach the pre-open unread baseline to a stable thread key."""
+    thread_key = _key(thread_key, "thread_key")
+    if unread_before_open is not None and type(unread_before_open) is not bool:
+        raise ValueError("Unread state must be true, false, or unknown")
+    status = "pending" if unread_before_open else (
+        "not_needed" if unread_before_open is False else "unknown"
+    )
+    with db._LOCK:
+        conn = db._conn()
+        row = conn.execute(
+            """SELECT c.id AS conversation_id FROM conversations c
+               JOIN sync_runs r ON r.operator=c.operator
+               WHERE r.id=? AND r.operator=? AND r.status='running' AND c.thread_key=?""",
+            (run_id, operator, thread_key),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Active run and account-scoped conversation required")
+        before = None if unread_before_open is None else int(unread_before_open)
+        existing = conn.execute(
+            "SELECT linkedin_unread_before_open FROM conversation_scan_observations "
+            "WHERE run_id=? AND conversation_id=?", (run_id, row["conversation_id"]),
+        ).fetchone()
+        if existing is not None:
+            if existing["linkedin_unread_before_open"] != before:
+                raise ValueError("Unread baseline conflicts with this scan")
+            return
+        conn.execute(
+            """INSERT INTO conversation_scan_observations
+               (run_id, conversation_id, linkedin_unread_before_open, restore_status)
+               VALUES (?, ?, ?, ?)""",
+            (run_id, row["conversation_id"], before, status),
+        )
+        conn.commit()
+
+
+def record_unread_restore(
+    operator: str, run_id: int, thread_key: str, status: str,
+    linkedin_unread_after: bool | None, *, error: str = "",
+) -> None:
+    """Record the marker actually seen after restoration, including failure."""
+    thread_key = _key(thread_key, "thread_key")
+    if status not in {"not_needed", "restored", "failed", "unknown"}:
+        raise ValueError("Invalid unread restoration status")
+    if linkedin_unread_after is not None and type(linkedin_unread_after) is not bool:
+        raise ValueError("Unread state must be true, false, or unknown")
+    with db._LOCK:
+        conn = db._conn()
+        row = conn.execute(
+            """SELECT c.id AS conversation_id, o.linkedin_unread_before_open
+               FROM conversation_scan_observations o
+               JOIN conversations c ON c.id=o.conversation_id
+               JOIN sync_runs r ON r.id=o.run_id
+               WHERE r.id=? AND r.operator=?
+                 AND c.operator=? AND c.thread_key=?""",
+            (run_id, operator, operator, thread_key),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Account-scoped run and unread baseline required")
+        if status == "restored" and (row["linkedin_unread_before_open"] != 1 or linkedin_unread_after is not True):
+            raise ValueError("Restored requires a verified unread marker")
+        if status == "not_needed" and row["linkedin_unread_before_open"] != 0:
+            raise ValueError("Not needed requires an initially read thread")
+        after = None if linkedin_unread_after is None else int(linkedin_unread_after)
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                """UPDATE conversation_scan_observations
+                   SET restore_status=?, restored_at=?, error=?
+                   WHERE run_id=? AND conversation_id=?""",
+                (status, db._now() if status == "restored" else None,
+                 error[:1000], run_id, row["conversation_id"]),
+            )
+            conn.execute(
+                "UPDATE conversations SET linkedin_unread=? WHERE id=?",
+                (after, row["conversation_id"]),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def pending_unread_restores(operator: str, run_id: int) -> list[dict[str, Any]]:
+    """Return opened unread threads whose marker has not been verified."""
+    with db._LOCK:
+        rows = db._conn().execute(
+            """SELECT c.thread_key,c.section,c.participant_name,c.preview_text
+               FROM conversation_scan_observations o
+               JOIN conversations c ON c.id=o.conversation_id
+               JOIN sync_runs r ON r.id=o.run_id
+               WHERE o.run_id=? AND r.operator=? AND c.operator=?
+                 AND o.linkedin_unread_before_open=1
+                 AND o.restore_status IN ('pending','failed','unknown')
+               ORDER BY c.id""",
+            (run_id, operator, operator),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def has_scan_observation(operator: str, run_id: int, thread_key: str) -> bool:
+    with db._LOCK:
+        return db._conn().execute(
+            """SELECT 1 FROM conversation_scan_observations o
+               JOIN conversations c ON c.id=o.conversation_id
+               JOIN sync_runs r ON r.id=o.run_id
+               WHERE o.run_id=? AND r.operator=? AND c.operator=? AND c.thread_key=?""",
+            (run_id, operator, operator, thread_key),
+        ).fetchone() is not None
+
+
+def record_open_intent(
+    operator: str, run_id: int, section: str, participant_name: str, preview_text: str,
+) -> int:
+    """Commit an unread row's identity before the browser can mark it read."""
+    participant_name = participant_name.strip()[:300]
+    preview_text = preview_text.strip()[:2000]
+    if not participant_name and not preview_text:
+        raise ValueError("Unread row has no recoverable visible identity")
+    with db._LOCK:
+        conn = db._conn()
+        run = conn.execute(
+            "SELECT operator, status, expected_sections_json FROM sync_runs WHERE id=?", (run_id,)
+        ).fetchone()
+        if not run or run["operator"] != operator or run["status"] != "running" or section not in json.loads(
+            run["expected_sections_json"]
+        ):
+            raise ValueError("Active account-scoped sync section required")
+        cur = conn.execute(
+            """INSERT INTO inbox_open_intents
+               (run_id, operator, section, participant_name, preview_text, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (run_id, operator, section, participant_name, preview_text, db._now()),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def bind_open_intent(operator: str, intent_id: int, thread_key: str) -> None:
+    thread_key = _key(thread_key, "thread_key")
+    with db._LOCK:
+        conn = db._conn()
+        row = conn.execute(
+            "SELECT thread_key FROM inbox_open_intents WHERE id=? AND operator=?",
+            (intent_id, operator),
+        ).fetchone()
+        if row is None or row["thread_key"] not in {None, thread_key}:
+            raise ValueError("Unread open intent does not match this account and thread")
+        conn.execute(
+            "UPDATE inbox_open_intents SET thread_key=? WHERE id=? AND operator=?",
+            (thread_key, intent_id, operator),
+        )
+        conn.commit()
+
+
+def record_open_intent_restore(
+    operator: str, intent_id: int, status: str, *, error: str = "",
+) -> None:
+    if status not in {"restored", "failed", "unknown"}:
+        raise ValueError("Invalid unread restoration status")
+    with db._LOCK:
+        conn = db._conn()
+        cur = conn.execute(
+            """UPDATE inbox_open_intents SET restore_status=?, restored_at=?, error=?
+               WHERE id=? AND operator=?""",
+            (status, db._now() if status == "restored" else None,
+             error[:1000], intent_id, operator),
+        )
+        if cur.rowcount != 1:
+            raise ValueError("Unread open intent does not belong to this account")
+        conn.commit()
+
+
+def pending_open_intents(operator: str, run_id: int | None = None) -> list[dict[str, Any]]:
+    """Include interrupted and previous partial runs before any new opening."""
+    with db._LOCK:
+        rows = db._conn().execute(
+            """SELECT * FROM inbox_open_intents
+               WHERE operator=? AND restore_status IN ('pending','failed','unknown')
+                 AND (? IS NULL OR run_id=?) ORDER BY id""",
+            (operator, run_id, run_id),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def set_section_coverage(
+    run_id: int, section: str, *, observed: int, stored: int,
+    unresolved: int, complete: bool, error: str = "",
+) -> None:
+    """Finalize one folder after incremental thread observations."""
+    if min(observed, stored, unresolved) < 0 or stored + unresolved > observed:
+        raise ValueError("Invalid section counts")
+    with db._LOCK:
+        conn = db._conn()
+        run = conn.execute("SELECT * FROM sync_runs WHERE id=? AND status='running'", (run_id,)).fetchone()
+        if run is None or section not in json.loads(run["expected_sections_json"]):
+            raise ValueError("Active run and expected section required")
+        coverage = json.loads(run["coverage_json"] or "{}")
+        coverage[section] = {
+            "status": "complete" if complete and not error and not unresolved else "incomplete",
+            "observed": observed, "stored": stored, "unresolved": unresolved,
+            "observed_at": db._now(), "error": error[:1000],
+        }
+        conn.execute("UPDATE sync_runs SET coverage_json=? WHERE id=?", (json.dumps(coverage), run_id))
+        conn.commit()
+
+
 def finish_sync_run(run_id: int, *, error: str = "") -> dict[str, Any]:
     with db._LOCK:
         conn = db._conn()
@@ -186,7 +395,14 @@ def list_sync_runs(operator: str, limit: int = 20) -> list[dict[str, Any]]:
 def list_conversations(operator: str, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
     with db._LOCK:
         rows = db._conn().execute(
-            """SELECT c.*, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id=c.id) AS message_count,
+            """SELECT c.*,
+                      (SELECT o.linkedin_unread_before_open FROM conversation_scan_observations o
+                       WHERE o.conversation_id=c.id ORDER BY o.run_id DESC LIMIT 1) AS last_scan_unread_before_open,
+                      (SELECT o.restore_status FROM conversation_scan_observations o
+                       WHERE o.conversation_id=c.id ORDER BY o.run_id DESC LIMIT 1) AS last_scan_restore_status,
+                      (SELECT o.error FROM conversation_scan_observations o
+                       WHERE o.conversation_id=c.id ORDER BY o.run_id DESC LIMIT 1) AS last_scan_restore_error,
+                      (SELECT COUNT(*) FROM messages m WHERE m.conversation_id=c.id) AS message_count,
                       (SELECT COUNT(*) FROM attachments a JOIN messages m ON m.id=a.message_id
                        WHERE m.conversation_id=c.id AND a.status='saved') AS file_count
                FROM conversations c WHERE c.operator=?
@@ -208,7 +424,15 @@ def get_conversation(operator: str, conversation_id: int) -> dict[str, Any] | No
     with db._LOCK:
         conn = db._conn()
         row = conn.execute(
-            "SELECT * FROM conversations WHERE operator=? AND id=?", (operator, conversation_id)
+            """SELECT c.*,
+                      (SELECT o.linkedin_unread_before_open FROM conversation_scan_observations o
+                       WHERE o.conversation_id=c.id ORDER BY o.run_id DESC LIMIT 1) AS last_scan_unread_before_open,
+                      (SELECT o.restore_status FROM conversation_scan_observations o
+                       WHERE o.conversation_id=c.id ORDER BY o.run_id DESC LIMIT 1) AS last_scan_restore_status,
+                      (SELECT o.error FROM conversation_scan_observations o
+                       WHERE o.conversation_id=c.id ORDER BY o.run_id DESC LIMIT 1) AS last_scan_restore_error
+               FROM conversations c WHERE c.operator=? AND c.id=?""",
+            (operator, conversation_id)
         ).fetchone()
         if not row:
             return None
@@ -327,9 +551,19 @@ def record_message(
             "SELECT id, direction, body, source_at FROM messages WHERE conversation_id=? AND source_key=?",
             (conversation_id, source_key),
         ).fetchone()
-        if row["direction"] != direction or row["body"] != body or row["source_at"] != source_at:
+        if (row["body"] != body or
+                (row["direction"] != direction and
+                 row["direction"] != "unknown" and direction != "unknown") or
+                (row["source_at"] and source_at and row["source_at"] != source_at)):
             conn.rollback()
             raise ValueError("Message source key conflicts with different content")
+        resolved_direction = row["direction"] if direction == "unknown" else direction
+        resolved_source_at = row["source_at"] or source_at
+        if resolved_direction != row["direction"] or resolved_source_at != row["source_at"]:
+            conn.execute(
+                "UPDATE messages SET direction=?, source_at=? WHERE id=?",
+                (resolved_direction, resolved_source_at, row["id"]),
+            )
         conn.commit()
         return int(row["id"])
 

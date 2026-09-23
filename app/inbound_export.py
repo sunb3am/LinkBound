@@ -32,6 +32,7 @@ def _csv_cell(value: Any) -> Any:
 
 
 def _rows(operator: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]],
+                                   list[dict[str, Any]], list[dict[str, Any]],
                                    list[dict[str, Any]], list[dict[str, Any]]]:
     with db._LOCK:
         conn = db._conn()
@@ -40,6 +41,16 @@ def _rows(operator: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]],
         ).fetchall()]
         conversations = [dict(row) for row in conn.execute(
             "SELECT * FROM conversations WHERE operator=? ORDER BY id", (operator,)
+        ).fetchall()]
+        scan_observations = [dict(row) for row in conn.execute(
+            """SELECT o.* FROM conversation_scan_observations o
+                 JOIN sync_runs r ON r.id=o.run_id
+                 JOIN conversations c ON c.id=o.conversation_id
+                 WHERE r.operator=? AND c.operator=? ORDER BY o.run_id, o.conversation_id""",
+            (operator, operator),
+        ).fetchall()]
+        open_intents = [dict(row) for row in conn.execute(
+            "SELECT * FROM inbox_open_intents WHERE operator=? ORDER BY id", (operator,)
         ).fetchall()]
         messages = [dict(row) for row in conn.execute(
             """SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id
@@ -52,7 +63,7 @@ def _rows(operator: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]],
                  WHERE c.operator=? ORDER BY m.conversation_id, m.id, a.id""",
             (operator,),
         ).fetchall()]
-    return runs, conversations, messages, attachments
+    return runs, conversations, scan_observations, open_intents, messages, attachments
 
 
 def _attachment_path(data_dir: Path, row: dict[str, Any]) -> Path:
@@ -84,7 +95,7 @@ def build_export(operator: str, data_dir: Path) -> Path:
     missing, or changed saved file aborts the export and removes the partial ZIP.
     """
     data_dir = Path(data_dir).resolve()
-    runs, conversations, messages, attachments = _rows(operator)
+    runs, conversations, scan_observations, open_intents, messages, attachments = _rows(operator)
 
     exports_dir = data_dir / "exports"
     exports_dir.mkdir(parents=True, exist_ok=True)
@@ -125,17 +136,24 @@ def build_export(operator: str, data_dir: Path) -> Path:
         writer = csv.DictWriter(
             contacts_buffer,
             fieldnames=("id", "contact_url", "participant_name", "match_state",
-                        "linkedin_unread", "reviewed_at", "last_observed_at",
+                        "linkedin_unread", "last_scan_unread_before_open",
+                        "last_scan_restore_status", "reviewed_at", "last_observed_at",
                         "message_count", "file_count"),
         )
         writer.writeheader()
+        latest_scan = {}
+        for observation in scan_observations:
+            latest_scan[observation["conversation_id"]] = observation
         for conversation in conversations:
+            scan = latest_scan.get(conversation["id"], {})
             writer.writerow({key: _csv_cell(value) for key, value in {
                 "id": conversation["id"],
                 "contact_url": conversation["contact_url"] or "",
                 "participant_name": conversation["participant_name"],
                 "match_state": conversation["match_state"],
                 "linkedin_unread": conversation["linkedin_unread"],
+                "last_scan_unread_before_open": scan.get("linkedin_unread_before_open"),
+                "last_scan_restore_status": scan.get("restore_status", ""),
                 "reviewed_at": conversation["reviewed_at"] or "",
                 "last_observed_at": conversation["last_observed_at"],
                 "message_count": message_counts.get(conversation["id"], 0),
@@ -148,6 +166,8 @@ def build_export(operator: str, data_dir: Path) -> Path:
             "exported_at": exported_at,
             "sync_runs": runs,
             "conversations": conversations,
+            "conversation_scan_observations": scan_observations,
+            "inbox_open_intents": open_intents,
             "messages": messages,
             "attachments": manifest_attachments,
         }

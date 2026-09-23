@@ -49,7 +49,7 @@ account restrictions.
 | Browser launch | `app/runner.py` uses a Playwright persistent Chrome context and passes a nondefault `AutomationControlled` launch flag. The pilot uses the same runner. | The flag's presence does not establish that LinkedIn trusts this browser. Do not add stealth plugins or further overrides based on unverified claims. Review any browser-flag change in a separate no-send regression test; the owner reports that the local send path has worked reliably. |
 | Session | `/var/lib/linkbound/profiles/me` is private to the non-root service user. The Phase 0 run reopened it and the owner confirmed a signed-in feed. | This proves session persistence for that test, not that LinkedIn has approved the environment. Keep one profile per account, one Chrome owner at a time, and protect profile backups as credentials. |
 | Outbound behavior | `config.yaml` currently allows `daily_cap: 100`, a fixed 30-second gap, and work outside business-hour gating; it stops on a recognized limit warning. | The daily cap and interval are internal settings with no published safe basis. Before hosted sends, agree a much smaller account-specific pilot budget, require a manual review gate, and test that every challenge, limit warning, and uncertain send pauses the account without automatic retry. Preserve the existing send selectors until a failing case is captured. |
-| Inbound behavior | The planned collector would scan inbox sections and tracked invitations daily. Read-state effects have not been tested. | Bound the first backfill and incremental scans, surface incomplete coverage, and stop on challenge or restricted-action notices. Test unread/read-receipt behavior before opening unread conversations automatically. |
+| Inbound behavior | A bounded headed pilot opened a controlled unread thread. Its unread marker disappeared and the visible Mark as unread action restored that marker. The pilot later stopped on a browser closure during file capture and recovered the marker in a fresh browser. No read-receipt reversal was established. | Keep pre-open unread intents, bounded coverage, and fail-closed recovery. Do not schedule daily scans until attachment capture and complete section handling are verified. Stop on challenges and restricted-action notices. |
 | Host security | noVNC and VNC bind to loopback and are reached through Tailscale. Playwright's Chromium sandbox defaults to off unless explicitly enabled; the pilot's observed Chrome command contained `--no-sandbox`. | Private ingress protects the VM control surface, not the LinkedIn account's policy standing. Test whether Chrome sandboxing can be enabled without breaking the headed pilot before production use; keep the browser under the non-root service account. |
 
 ## Work to add before hosted automation
@@ -69,9 +69,11 @@ account restrictions.
    choose a conservative per-account budget and review every initial send and
    account notice. Keep the current local browser workflow as the fallback.
    Do not treat absence of a warning as proof of safety.
-5. **Inbound scan discipline:** Test LinkedIn unread/read-receipt effects first;
-   bound scan volume and record coverage and failures. A challenge halts sync
-   rather than prompting alternate routes or escalating request volume.
+5. **Inbound scan discipline:** The unread-marker effect has been tested; a
+   restored marker may not undo a read receipt. Keep the scan bounded, record
+   partial coverage and failures, and resolve the hosted attachment crash
+   before scheduling. A challenge halts sync rather than prompting alternate
+   routes or escalating request volume.
 
 This review makes no changes to the working outbound browser behavior or to
 the Linode login while the owner is using it. The unresolved decision is

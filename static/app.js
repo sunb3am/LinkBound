@@ -1222,6 +1222,13 @@ function renderInboxConversation(conversation) {
   const unmatched = conversation.match_state === "unmatched";
   const ambiguous = conversation.match_state === "ambiguous";
   const reviewed = !!conversation.reviewed_at;
+  const scanLabel = conversation.last_scan_unread_before_open === 1
+    ? conversation.last_scan_restore_status === "restored"
+      ? "Unread before scan; restored"
+      : conversation.last_scan_restore_status === "pending"
+        ? "Unread before scan; restore pending"
+        : "Unread before scan; restore unverified"
+    : "";
   const label = conversation.participant_name || "Unknown participant";
   return `<button class="inbox-conversation${selected ? " selected" : ""}" type="button"
       data-conversation-id="${esc(String(conversation.id))}" aria-pressed="${selected}">
@@ -1232,6 +1239,7 @@ function renderInboxConversation(conversation) {
     <span class="inbox-preview">${esc(conversation.preview_text || "No message preview")}</span>
     <span class="inbox-row-meta">
       <span class="inbox-label${unread ? " unread" : ""}">${readLabel}</span>
+      ${scanLabel ? `<span class="inbox-label${conversation.last_scan_restore_status === "restored" ? "" : " unmatched"}">${scanLabel}</span>` : ""}
       ${reviewed ? `<span class="inbox-label reviewed">Reviewed</span>` : `<span class="inbox-label pending-review">Needs review</span>`}
       ${unmatched ? `<span class="inbox-label unmatched">Unmatched</span>` : ""}
       ${ambiguous ? `<span class="inbox-label unmatched">Identity conflict</span>` : ""}
@@ -1325,6 +1333,11 @@ function renderInboxDetail(conversation) {
   const ambiguous = conversation.match_state === "ambiguous";
   const readLabel = conversation.linkedin_unread == null ? "LinkedIn read state unknown" :
     conversation.linkedin_unread ? "LinkedIn unread" : "Read on LinkedIn";
+  const scanLabel = conversation.last_scan_unread_before_open === 1
+    ? conversation.last_scan_restore_status === "restored"
+      ? "Unread before last scan; restored on LinkedIn"
+      : "Unread before last scan; restoration needs attention"
+    : "";
   const messageHtml = messages.length ? messages.map(message => {
     const direction = String(message.direction || "unknown").toLowerCase();
     const attachments = Array.isArray(message.attachments) ? message.attachments : [];
@@ -1348,6 +1361,7 @@ function renderInboxDetail(conversation) {
         <h3>${esc(participant)}</h3>
         <div class="inbox-detail-badges">
           <span class="inbox-label${conversation.linkedin_unread ? " unread" : ""}">${readLabel}</span>
+          ${scanLabel ? `<span class="inbox-label${conversation.last_scan_restore_status === "restored" ? "" : " unmatched"}">${scanLabel}</span>` : ""}
           <span class="inbox-label${reviewed ? " reviewed" : " pending-review"}">${reviewed ? "Reviewed in LinkBound" : "Not reviewed in LinkBound"}</span>
           ${unmatched ? `<span class="inbox-label unmatched">Unmatched contact</span>` : ambiguous ? `<span class="inbox-label unmatched">Identity conflict</span>` : `<span class="inbox-label">${esc(conversation.match_state || "Contact status unknown")}</span>`}
         </div>
@@ -1685,7 +1699,7 @@ async function loadOperators() {
   tbody.innerHTML = "";
 
   if (!data.operators || data.operators.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-faint); padding: 32px;">
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-faint); padding: 32px;">
       No sessions yet. Add one above to get started.
     </td></tr>`;
     return;
@@ -1700,7 +1714,13 @@ async function loadOperators() {
       <tr>
         <td style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-faint);">${esc(op.key)}</td>
         <td class="cell-name">${esc(displayName)}</td>
-        <td style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-faint);">profiles/${esc(op.key)}/</td>
+        <td style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-faint);">${esc(op.profile_dir)}</td>
+        <td>
+          <div class="op-identity-control">
+            <input type="url" aria-label="LinkedIn profile URL for ${esc(displayName)}" value="${esc(op.linkedin_self_url || "")}" placeholder="linkedin.com/in/username" spellcheck="false">
+            <button class="btn small" type="button" data-save-identity="${esc(op.key)}">Save URL</button>
+          </div>
+        </td>
         <td style="font-size: 0.85rem; color: var(--text-faint);">${createdDate}</td>
         <td>
           <button class="btn danger small" onclick="deleteOperator('${esc(op.key)}')">Delete</button>
@@ -1709,6 +1729,29 @@ async function loadOperators() {
     `);
   });
 }
+
+$("#opsTable tbody").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-save-identity]");
+  if (!button) return;
+  const key = button.dataset.saveIdentity;
+  const input = button.closest(".op-identity-control").querySelector("input");
+  const url = input.value.trim();
+  if (!url) return showToast("Enter the LinkedIn profile URL shown under Me.", "error");
+  button.disabled = true;
+  try {
+    await api(`/api/operators/${encodeURIComponent(key)}/linkedin-identity`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ linkedin_url: url }),
+    });
+    showToast("LinkedIn profile URL saved.");
+    await loadOperators();
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+});
 
 $("#btnCreateOp").addEventListener("click", async () => {
   const name = $("#newOpName").value.trim();

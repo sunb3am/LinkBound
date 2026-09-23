@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from .linkedin_urls import canonical_profile_url
 from .models import SENT_STATUSES, TERMINAL_CONTACTED
 
 _LOCK = threading.Lock()
@@ -208,6 +209,9 @@ def init_db(db_path: Path) -> None:
             _migrate_outreach_uncertainties(_CONN)
             _migrate_campaign_pause_reason(_CONN)
             _migrate_inbound_sync(_CONN)
+            _migrate_inbound_read_state(_CONN)
+            _migrate_inbox_open_intents(_CONN)
+            _migrate_operator_identity(_CONN)
             _CONN.execute("CREATE INDEX IF NOT EXISTS idx_requests_normalized_status ON outbound_requests(normalized_linkedin_url, status)")
             _CONN.execute("CREATE INDEX IF NOT EXISTS idx_contacts_normalized_url ON contacts(normalized_linkedin_url)")
             _CONN.commit()
@@ -447,6 +451,56 @@ def _migrate_inbound_sync(conn: sqlite3.Connection) -> None:
     for statement in statements:
         conn.execute(statement)
     conn.execute("PRAGMA user_version = 6")
+
+
+def _migrate_inbound_read_state(conn: sqlite3.Connection) -> None:
+    """Keep the pre-open unread state and its restoration result per scan."""
+    if int(conn.execute("PRAGMA user_version").fetchone()[0]) >= 7:
+        return
+    conn.execute("""CREATE TABLE conversation_scan_observations (
+        run_id INTEGER NOT NULL REFERENCES sync_runs(id),
+        conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+        linkedin_unread_before_open INTEGER,
+        restore_status TEXT NOT NULL,
+        restored_at TEXT,
+        error TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (run_id, conversation_id)
+    )""")
+    conn.execute("CREATE INDEX idx_scan_observations_conversation_latest "
+                 "ON conversation_scan_observations(conversation_id, run_id DESC)")
+    conn.execute("PRAGMA user_version = 7")
+
+
+def _migrate_inbox_open_intents(conn: sqlite3.Connection) -> None:
+    """Version 8 retains an unread baseline before a thread URL is available."""
+    if int(conn.execute("PRAGMA user_version").fetchone()[0]) >= 8:
+        return
+    conn.execute("""CREATE TABLE inbox_open_intents (
+        id INTEGER PRIMARY KEY,
+        run_id INTEGER NOT NULL REFERENCES sync_runs(id),
+        operator TEXT NOT NULL,
+        section TEXT NOT NULL,
+        participant_name TEXT NOT NULL,
+        preview_text TEXT NOT NULL,
+        thread_key TEXT,
+        restore_status TEXT NOT NULL DEFAULT 'pending',
+        restored_at TEXT,
+        error TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        UNIQUE(run_id, section, participant_name, preview_text)
+    )""")
+    conn.execute("CREATE INDEX idx_open_intents_pending ON inbox_open_intents(operator, restore_status, id)")
+    conn.execute("PRAGMA user_version = 8")
+
+
+def _migrate_operator_identity(conn: sqlite3.Connection) -> None:
+    """Version 9 binds inbound scans to the signed-in LinkedIn account."""
+    if int(conn.execute("PRAGMA user_version").fetchone()[0]) >= 9:
+        return
+    _ensure_column(conn, "operators", "linkedin_self_url", "linkedin_self_url TEXT")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_operators_self_url ON operators(linkedin_self_url) "
+                 "WHERE linkedin_self_url IS NOT NULL")
+    conn.execute("PRAGMA user_version = 9")
 
 
 def close_db() -> None:
@@ -1059,6 +1113,37 @@ def create_operator(key: str, label: str, profile_dir: str) -> None:
             (key, label, profile_dir, now),
         )
         conn.commit()
+
+
+def set_operator_self_profile_url(key: str, raw_url: str) -> str:
+    """Bind one sender to the exact LinkedIn profile shown by its Me menu."""
+    try:
+        canonical = canonical_profile_url(raw_url)
+    except ValueError as exc:
+        raise ValueError("A LinkedIn /in/ profile URL is required") from exc
+    path = urlsplit(canonical).path
+    if not path.startswith("/in/") or path.count("/") != 2:
+        raise ValueError("A LinkedIn /in/ profile URL is required")
+    url = normalize_url(canonical)
+    with _LOCK:
+        conn = _conn()
+        row = conn.execute(
+            "SELECT linkedin_self_url FROM operators WHERE key=?", (key,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("Unknown sender account")
+        if row["linkedin_self_url"] not in {None, url} and any(
+            conn.execute(f"SELECT 1 FROM {table} WHERE operator=? LIMIT 1", (key,)).fetchone()
+            for table in ("sync_runs", "outbound_requests", "account_contacts", "campaigns", "batches")
+        ):
+            raise ValueError("This account has history; review it before changing its identity")
+        if conn.execute(
+            "SELECT 1 FROM operators WHERE linkedin_self_url=? AND key<>?", (url, key)
+        ).fetchone():
+            raise ValueError("This LinkedIn profile is already bound to another sender account")
+        conn.execute("UPDATE operators SET linkedin_self_url=? WHERE key=?", (url, key))
+        conn.commit()
+    return url
 
 def delete_operator(key: str) -> bool:
     with _LOCK:

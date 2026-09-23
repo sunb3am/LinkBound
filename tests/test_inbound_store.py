@@ -31,6 +31,24 @@ def _inventory(operator, *, thread="thread-100", section="focused", preview="Hel
     return run, counts, result
 
 
+def test_operator_identity_binding_is_unique_and_preserved_with_inbox_history(database):
+    url = db.set_operator_self_profile_url(
+        "sender_a", "https://www.linkedin.com/in/Sender-A/?trk=menu"
+    )
+    assert url == "https://linkedin.com/in/sender-a"
+    assert db.set_operator_self_profile_url("sender_a", url) == url
+    with pytest.raises(ValueError, match="profile URL"):
+        db.set_operator_self_profile_url("sender_b", "https://linkedin.com/in/sender-a/recent-activity")
+    with pytest.raises(ValueError, match="already bound"):
+        db.set_operator_self_profile_url("sender_b", url)
+    _inventory("sender_a")
+    with pytest.raises(ValueError, match="has history"):
+        db.set_operator_self_profile_url("sender_a", "https://linkedin.com/in/other")
+    assert next(item for item in db.list_operators() if item["key"] == "sender_a")[
+        "linkedin_self_url"
+    ] == url
+
+
 def test_repeated_inventory_is_idempotent_and_review_is_independent(database):
     first, counts, result = _inventory("sender_a")
     assert counts == {"observed": 1, "stored": 1, "unresolved": 0}
@@ -85,6 +103,74 @@ def test_unread_state_requires_boolean_or_unknown(database):
     assert inbound_store.list_conversations("sender_a") == []
 
 
+def test_scan_observation_is_account_scoped_idempotent_and_keeps_original_unread(database):
+    run = inbound_store.start_sync_run("sender_a", expected_sections=("focused",))
+    inbound_store.record_inventory_section(run, "focused", [{
+        "thread_key": "thread-snapshot", "participant_name": "Pat Lee",
+        "preview_text": "Original", "linkedin_unread": True,
+    }], complete=True)
+    conversation = inbound_store.list_conversations("sender_a")[0]
+
+    inbound_store.record_scan_observation("sender_a", run, "thread-snapshot", True)
+    inbound_store.record_scan_observation("sender_a", run, "thread-snapshot", True)
+    with pytest.raises(ValueError):
+        inbound_store.record_scan_observation("sender_b", run, "thread-snapshot", True)
+
+    rows = db._conn().execute(
+        "SELECT run_id, conversation_id, linkedin_unread_before_open, restore_status, restored_at, error "
+        "FROM conversation_scan_observations"
+    ).fetchall()
+    assert len(rows) == 1
+    assert tuple(rows[0]) == (run, conversation["id"], 1, "pending", None, "")
+
+    # Later inbox inventory changes the latest state, while this run's pre-open
+    # snapshot remains the value observed before opening the thread.
+    next_run = inbound_store.start_sync_run("sender_a", expected_sections=("focused",))
+    inbound_store.record_inventory_section(next_run, "focused", [{
+        "thread_key": "thread-snapshot", "participant_name": "Pat Lee",
+        "preview_text": "Changed", "linkedin_unread": False,
+    }], complete=True)
+    assert inbound_store.list_conversations("sender_a")[0]["linkedin_unread"] == 0
+    assert db._conn().execute(
+        "SELECT linkedin_unread_before_open FROM conversation_scan_observations WHERE run_id=?",
+        (run,),
+    ).fetchone()[0] == 1
+
+
+def test_verified_unread_restore_records_outcome_and_latest_state(database):
+    run = inbound_store.start_sync_run("sender_a", expected_sections=("focused",))
+    inbound_store.record_inventory_section(run, "focused", [{
+        "thread_key": "thread-restore", "participant_name": "Pat Lee",
+        "preview_text": "Hello", "linkedin_unread": True,
+    }], complete=True)
+    inbound_store.record_scan_observation("sender_a", run, "thread-restore", True)
+
+    inbound_store.record_unread_restore(
+        "sender_a", run, "thread-restore", "restored", True,
+    )
+    inbound_store.record_unread_restore(
+        "sender_a", run, "thread-restore", "restored", True,
+    )
+    conversation = inbound_store.list_conversations("sender_a")[0]
+    assert conversation["linkedin_unread"] == 1
+    row = db._conn().execute(
+        "SELECT linkedin_unread_before_open, restore_status, restored_at, error "
+        "FROM conversation_scan_observations WHERE run_id=?",
+        (run,),
+    ).fetchone()
+    assert tuple(row) == (1, "restored", row["restored_at"], "")
+    assert row["restored_at"]
+
+    with pytest.raises(ValueError):
+        inbound_store.record_unread_restore(
+            "sender_b", run, "thread-restore", "restored", True,
+        )
+    with pytest.raises(ValueError):
+        inbound_store.record_unread_restore(
+            "sender_a", run, "thread-restore", "verified", True,
+        )
+
+
 def test_messages_and_files_are_account_scoped_and_byte_verified(database, monkeypatch):
     _, _, _ = _inventory("sender_a")
     conversation_id = inbound_store.list_conversations("sender_a")[0]["id"]
@@ -130,6 +216,30 @@ def test_messages_and_files_are_account_scoped_and_byte_verified(database, monke
     path.write_bytes(b"tampered")
     with pytest.raises(ValueError, match="corrupt"):
         inbound_store.attachment_file("sender_a", file_id, database)
+
+
+def test_message_direction_and_timestamp_gain_evidence_without_duplicate(database):
+    _inventory("sender_a")
+    conversation_id = inbound_store.list_conversations("sender_a")[0]["id"]
+    message_id = inbound_store.record_message(
+        "sender_a", conversation_id, source_key="msg-late-evidence",
+        direction="unknown", body="Thanks",
+    )
+    assert inbound_store.record_message(
+        "sender_a", conversation_id, source_key="msg-late-evidence",
+        direction="inbound", body="Thanks", source_at="2026-09-23T10:00:00Z",
+    ) == message_id
+    assert inbound_store.record_message(
+        "sender_a", conversation_id, source_key="msg-late-evidence",
+        direction="unknown", body="Thanks",
+    ) == message_id
+    row = db._conn().execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
+    assert (row["direction"], row["source_at"]) == ("inbound", "2026-09-23T10:00:00Z")
+    with pytest.raises(ValueError, match="conflicts"):
+        inbound_store.record_message(
+            "sender_a", conversation_id, source_key="msg-late-evidence",
+            direction="outbound", body="Thanks",
+        )
 
 
 def test_interrupted_scan_stays_visible(database):

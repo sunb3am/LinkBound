@@ -447,6 +447,7 @@ code {
 
 input[type="text"],
 input[type="number"],
+input[type="url"],
 select,
 textarea {
   width: 100%;
@@ -919,6 +920,20 @@ tr:hover td { background: rgba(0,0,0,0.015); }
   display: flex;
   gap: 12px;
   margin-bottom: 0;
+}
+.op-identity-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 260px;
+}
+.op-identity-control input {
+  min-width: 180px;
+  font-size: 0.82rem;
+  padding: 6px 0;
+}
+.op-identity-control button {
+  flex: none;
 }
 .sessions-help {
   margin-top: 20px;

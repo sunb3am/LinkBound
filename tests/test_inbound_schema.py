@@ -14,9 +14,9 @@ def database(tmp_path):
     db.close_db()
 
 
-def test_fresh_database_has_inbound_schema_v6(database):
+def test_fresh_database_has_inbound_schema_v9(database):
     conn = db._conn()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
 
     expected = {
         "sync_runs": {
@@ -40,10 +40,22 @@ def test_fresh_database_has_inbound_schema_v6(database):
             "id", "operator", "contact_url", "fact", "source",
             "first_observed_at", "last_observed_at",
         },
+        "conversation_scan_observations": {
+            "run_id", "conversation_id", "linkedin_unread_before_open",
+            "restore_status", "restored_at", "error",
+        },
+        "inbox_open_intents": {
+            "id", "run_id", "operator", "section", "participant_name",
+            "preview_text", "thread_key", "restore_status", "restored_at",
+            "error", "created_at",
+        },
     }
     for table, columns in expected.items():
         actual = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         assert actual == columns
+    assert "linkedin_self_url" in {
+        row[1] for row in conn.execute("PRAGMA table_info(operators)")
+    }
 
     indexes = {row[0] for row in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='index'"
@@ -54,12 +66,21 @@ def test_fresh_database_has_inbound_schema_v6(database):
         "idx_messages_conversation_latest",
         "idx_attachments_message_latest",
         "idx_relationship_observations_operator_latest",
+        "idx_open_intents_pending",
+        "idx_operators_self_url",
     } <= indexes
     foreign_keys = {
         (row[2], row[3], row[4])
         for row in conn.execute("PRAGMA foreign_key_list(messages)")
     }
     assert ("conversations", "conversation_id", "id") in foreign_keys
+
+    scan_foreign_keys = {
+        (row[2], row[3], row[4])
+        for row in conn.execute("PRAGMA foreign_key_list(conversation_scan_observations)")
+    }
+    assert ("sync_runs", "run_id", "id") in scan_foreign_keys
+    assert ("conversations", "conversation_id", "id") in scan_foreign_keys
 
 
 def test_v5_upgrade_preserves_data_and_is_idempotent(database):
@@ -76,7 +97,8 @@ def test_v5_upgrade_preserves_data_and_is_idempotent(database):
     )
     conn.commit()
 
-    for table in ("attachments", "messages", "conversations", "sync_runs", "relationship_observations"):
+    for table in ("inbox_open_intents", "conversation_scan_observations", "attachments", "messages",
+                  "conversations", "sync_runs", "relationship_observations"):
         conn.execute(f"DROP TABLE {table}")
     conn.execute("PRAGMA user_version = 5")
     conn.commit()
@@ -84,7 +106,7 @@ def test_v5_upgrade_preserves_data_and_is_idempotent(database):
 
     db.init_db(database)
     conn = db._conn()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
     assert tuple(conn.execute(
         "SELECT public_id, operator, status FROM batches"
     ).fetchone()) == ("B-1", "operator-a", "complete")
@@ -102,7 +124,7 @@ def test_v5_upgrade_preserves_data_and_is_idempotent(database):
         "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
     ).fetchall()]
     assert schema_after == schema_before
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
 
 
 def test_operator_with_inbound_history_cannot_be_deleted(database):

@@ -133,6 +133,9 @@ if [[ -f "$LINKBOUND_DATA_DIR/outbound.db" ]]; then
   if [[ -d "$LINKBOUND_DATA_DIR/uploads" ]]; then
     backup_args+=(--uploads "$LINKBOUND_DATA_DIR/uploads")
   fi
+  if [[ -d "$LINKBOUND_DATA_DIR/inbound_files" ]]; then
+    backup_args+=(--inbound-files "$LINKBOUND_DATA_DIR/inbound_files")
+  fi
   "$release/.venv/bin/python" "$release/scripts/backup_state.py" "${backup_args[@]}"
   "$release/.venv/bin/python" "$release/scripts/backup_state.py" verify "$snapshot"
 fi
@@ -157,7 +160,7 @@ for attempt in $(seq 1 30); do
 done
 [[ "$ready" -eq 1 ]]
 systemctl is-active --quiet linkbound-app.service
-"$release/.venv/bin/python" -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); assert c.execute("PRAGMA user_version").fetchone()[0] == 6' "$LINKBOUND_DATA_DIR/outbound.db"
+"$release/.venv/bin/python" -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); assert c.execute("PRAGMA user_version").fetchone()[0] == 9' "$LINKBOUND_DATA_DIR/outbound.db"
 
 mkdir -p /var/log/linkbound
 printf '%s commit=%s previous=%s snapshot=%s result=success\n' \
