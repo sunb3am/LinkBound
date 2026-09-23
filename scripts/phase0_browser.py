@@ -87,7 +87,11 @@ def main() -> None:
     args = parser.parse_args()
     if args.wait_seconds < 1:
         parser.error("--wait-seconds must be positive")
-    asyncio.run(run(args.operator, args.profile_dir, args.evidence_dir, args.wait_seconds))
+    try:
+        asyncio.run(run(args.operator, args.profile_dir, args.evidence_dir, args.wait_seconds))
+    except KeyboardInterrupt:
+        # systemd stops the pilot after the async cleanup has written evidence.
+        pass
 
 
 if __name__ == "__main__":

@@ -13,4 +13,5 @@ Environment=DISPLAY=:1
 Environment=LINKBOUND_DATA_DIR=/var/lib/linkbound/data
 ExecStart=/opt/linkbound/pilot-venv/bin/python -m scripts.phase0_browser --operator me --profile-dir /var/lib/linkbound/profiles/me --evidence-dir /var/lib/linkbound/evidence --wait-seconds 1800
 KillSignal=SIGINT
+KillMode=mixed
 TimeoutStopSec=20
