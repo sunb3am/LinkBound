@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.runner import LinkedInRunner
-from app.settings import load_settings
+from app.settings import ROOT, load_settings
 
 
 def _now() -> str:
@@ -26,7 +26,10 @@ def _absolute_path(value: str) -> Path:
     path = Path(value).expanduser()
     if not path.is_absolute():
         raise argparse.ArgumentTypeError("use an absolute path outside the code release")
-    return path.resolve()
+    path = path.resolve()
+    if path.is_relative_to(ROOT.resolve()):
+        raise argparse.ArgumentTypeError("path must be outside the code release")
+    return path
 
 
 async def run(operator: str, profile_dir: Path, evidence_dir: Path, wait_seconds: int) -> Path:
