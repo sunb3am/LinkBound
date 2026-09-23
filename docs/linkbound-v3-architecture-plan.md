@@ -48,6 +48,22 @@ The contact page derives `invited`, `accepted`, `replied`, and `file_received` f
 
 Use Alembic for versioned migrations but keep runtime `sqlite3` until a concrete query or concurrency need justifies SQLAlchemy Core. Back up the SQLite file before migration, enable foreign keys and a deliberate busy timeout, and reconcile legacy request counts. Do not infer account ownership, acceptance, or replies from ambiguous old rows. No broad ORM rewrite is part of the foundation.
 
+## Implementation discipline
+
+Keep one owner for each decision and fact:
+
+| Responsibility | Owner and cleanup |
+| --- | --- |
+| Sender accounts | `operators` in SQLite is authoritative after initial configuration seeding. Settings supplies defaults, not a second mutable account registry. Remove the current two-store update path when account reads move to the database. |
+| Run coordination | One coordinator owns profile locks and run lifecycle for dashboard, API, scheduled, name-resolution, and inbound operations. Each operation keeps its own small use-case logic. Remove the separate module-level and per-operator orchestrator start paths once both callers use the same coordinator. |
+| Outbound policy | Existing decision and safety code owns dedup, eligibility, and account budgets. Dashboard preview and pre-send execution call the same rule functions, with a fresh check immediately before a send. |
+| Browser interaction | `runner.py` owns Chrome profile opening, login checks, selectors, and LinkedIn observations. The coordinator calls it; HTTP handlers and persistence code do not drive pages. Preserve working send steps unless a reproduced defect requires a change. |
+| Persistence | Public data functions own transactions and SQL. Route modules do not reach into `db._conn()` or `db._LOCK` for paths being changed. Keep `db.py` small enough to understand; split by domain only when it becomes hard to navigate. |
+| Outreach and inbox facts | Completed `outbound_requests` are the source for send facts, and `messages` are the source for received text. `account_contacts` and dashboard statuses are derived views or clearly marked caches. Retire reads and writes of `contacts.last_status` after migration rather than keeping two competing histories. |
+| Queue | `campaign_targets` owns due time and queue state. Remove `_UPLOADS` and the scheduler that currently marks campaigns running without sending when the durable queue replaces them. A run never has two active schedulers. |
+
+Build each release as a vertical slice: migration, domain operation, API, necessary UI, focused invariant tests, and removal of the replaced path. Share business rules across the dashboard and API, but introduce an interface or abstraction only when a second real implementation needs it. Do not create a generic CRM framework, event bus, step engine, or worker protocol in anticipation of future features. A release is not finished while old and new paths can disagree about account identity, send history, or queue state.
+
 ## Durable queue and browser worker
 
 The queue stores every target before scheduling. A due target is claimed transactionally with a lease and run ID. The serialized runner refreshes contact history, do-not-contact state, and account budget immediately before using the existing detect, decide, and execute functions. It records the final text actually sent, outcome, trace, and screenshot in `outbound_requests`. One database-backed poller is enough for this volume. A crash after a possible click marks the target uncertain for review.
@@ -85,7 +101,7 @@ Use a restrained operations console treatment: canvas `#F8F8F5`, surface `#FFFFF
 | Release | Independently usable result | Required proof |
 | --- | --- | --- |
 | 0. Hosted browser feasibility | Headed Linode Chrome with one persistent profile and read-only navigation | Repeated login and navigation succeed; no profile sharing; account owner reviews pilot evidence before hosted sends |
-| A. Account foundation | Versioned migration, account-scoped history and dedup, one run coordinator | Two accounts retain separate histories; a later skip cannot erase a prior send; old rows reconcile; current send path still works |
+| A. Account foundation | Versioned migration, account-scoped history and dedup, one run coordinator | Two accounts retain separate histories; dashboard and API use the same coordinator; a later skip cannot erase a prior send; old rows reconcile; current send path still works |
 | B. Private Linode app | Authenticated UI/API, persistent SQLite and files, hosted browser if pilot passes, backups and restore | Unauthenticated UI/API/file/WebSocket denied; restart preserves CRM and login; restore succeeds |
 | C. Scheduled outbound | Durable targets, per-account budgets, queue UI, pause and crash recovery | 500 rows survive restart; one target cannot be claimed concurrently by two runners; duplicate import cannot silently resend; limits hold; uncertain sends do not auto-retry |
 | D. Closed-loop CRM | Daily inbound sync, accepted and reply evidence, account-scoped threads, attachments, inbox review, bulk export | Two scans create no duplicate messages or files; unmatched replies and stale sync stay visible; exported bytes match hashes and source records |
