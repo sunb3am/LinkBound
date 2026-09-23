@@ -23,6 +23,8 @@ LinkBound becomes a continuously available internal outbound operations system. 
 
 The [CRM benchmark](linkbound-v3-crm-benchmark.md) gives useful logical distinctions. It is a reference catalog, not a list of tables to implement. The first version serves one app user, a few LinkedIn sender accounts, one outbound action per campaign, daily no-send sync, and one Cruitical handoff. Keep the existing Playwright send path and `sqlite3` persistence. Add a table only when a requested workflow needs independent state or a database constraint.
 
+All LinkedIn operations use the existing browser automation approach. No LinkedIn API or partner integration is in scope. LinkBound's own API and the Cruitical handoff API remain separate requirements.
+
 The first technical proof is a headed Chrome pilot on Linode with one account, persistent profile, and no-send navigation. It happens before a large queue or CRM build. A new IP and Linux environment may change account behavior; the pilot cannot guarantee the present account experience. If it succeeds, host the app, browser, SQLite, and attachments on one private Linode VM. If it fails, a Linode dashboard with the current local browser is a fallback, with the explicit limitation that scheduled sends and sync stop when the local machine is offline. A remote worker protocol is built only if that fallback becomes necessary.
 
 ```mermaid
@@ -132,7 +134,6 @@ The 0a findings are assigned as follows:
 | Challenge, restriction, limit, and uncertain-send stops; account-specific pilot budget | C: outbound worker and the small reviewed hosted-send pilot; the shared pause mechanism starts in A |
 | Unread/read-receipt behavior and bounded inbox scans | Finish the unread-state observation from 0 before D; implement bounded collection and stop conditions in D |
 | Account-owner acceptance of LinkedIn's stated automation risk | Decision gate before any hosted send in C, not an engineering feature |
-| LinkedIn partner/API eligibility | Research before committing to browser-based C and D as the permanent integration; revisit those phases if access is approved |
 
 The browser feasibility pilot comes before major queue work because always-on hosted automation is the point of the deployment. It is a gate for hosted sends, not a reason to rewrite the existing browser selectors. The first implementation branch should contain the pilot and Release A only.
 

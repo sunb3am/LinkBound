@@ -3,7 +3,8 @@
 Research date: 2026-09-23. Scope: public LinkedIn documentation, primary
 browser/Playwright documentation, the LinkBound code, and read-only inspection
 of the Phase 0 Linode. This is an account-risk assessment, not evidence that a
-browser is undetectable or that automated use is permitted.
+browser is undetectable or that automated use is permitted. LinkedIn operations
+remain browser-only; this review does not propose a LinkedIn API integration.
 
 ## What LinkedIn actually discloses
 
@@ -15,7 +16,6 @@ browser is undetectable or that automated use is permitted.
 | High volumes of messages or other content in a short period can lead to reduced visibility or account restrictions. All accounts have invitation limits, but LinkedIn does not publish a generally safe count; an invitation restriction typically lasts a week. | The configured 100 invitations per day is our ceiling, not a LinkedIn allowance. A fixed interval or lower count cannot guarantee safety. | [High volume of content shared](https://www.linkedin.com/help/linkedin/answer/a1339697/high-volume-of-messages-sent?lang=en), [invitation limits](https://www.linkedin.com/help/linkedin/answer/a550555) |
 | Unusually many page or profile views can trigger warnings or temporary viewing restrictions, and LinkedIn calls out systematic viewing as prohibited. | A large inbox/contact backfill has its own account risk even if it sends nothing. A daily collector should stop on these notices and report incomplete coverage. | [Restricted Action Message](https://www.linkedin.com/help/linkedin/answer/a1339210/restricted-action-message?lang=en), [Profile Scraping Limit Notification](https://www.linkedin.com/help/linkedin/answer/a1393432) |
 | Third-party software that automates LinkedIn website activity is disallowed. Automated inauthentic activity can lead to temporary or permanent account restriction. | A headed Chrome window, persistent cookies, careful pacing, or a clean pilot do not change LinkedIn's stated rule. Hosted sends require an explicit product and account-risk decision. | [Automated activity](https://www.linkedin.com/help/linkedin/answer/a1340567/automated-activity-on-linkedin?lang=en), [Account restrictions](https://www.linkedin.com/help/linkedin/answer/a1340522), [User Agreement §8.2](https://www.linkedin.com/legal/user-agreement) |
-| LinkedIn's Invitations API can create and inspect invitation states, but access is restricted to approved partners. | Evaluate a partner/API route for durable LinkedIn operations; the documented endpoint is not generally available to this app without approval. | [Invitations API](https://learn.microsoft.com/en-us/linkedin/shared/integrations/communications/invitations), [API access](https://learn.microsoft.com/en-us/linkedin/shared/authentication/getting-access) |
 
 The published material does **not** specify LinkedIn's detection model, signal
 weights, thresholds, how it classifies cloud IPs, or a browser configuration
@@ -72,9 +72,6 @@ account restrictions.
 5. **Inbound scan discipline:** Test LinkedIn unread/read-receipt effects first;
    bound scan volume and record coverage and failures. A challenge halts sync
    rather than prompting alternate routes or escalating request volume.
-6. **Approved integration review:** Check whether Cruitical can qualify for a
-   relevant LinkedIn partner product/API before treating browser automation as
-   the permanent integration contract.
 
 This review makes no changes to the working outbound browser behavior or to
 the Linode login while the owner is using it. The unresolved decision is
