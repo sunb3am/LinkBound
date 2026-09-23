@@ -228,6 +228,7 @@ def _build_one(
     template_body: str,
     action: ActionType,
     sender: str,
+    operator: str,
 ) -> tuple[PreviewRow, dict[str, Any]]:
     name_source = "csv" if (first_name or last_name or full_name_in) else ""
 
@@ -274,7 +275,7 @@ def _build_one(
             else:
                 issues_hard.append(it)
 
-    already = db.is_already_contacted(linkedin_url, TERMINAL_CONTACTED) if linkedin_url else False
+    already = db.is_already_contacted(linkedin_url, TERMINAL_CONTACTED, operator) if linkedin_url else False
 
     template_ok = not issues_hard
     all_issues = [_explain(i) for i in issues_hard] + issues_soft
@@ -369,6 +370,7 @@ def build_preview(
             template_body=body,
             action=action,
             sender=sender,
+            operator=operator,
         )
         preview.append(pr)
         jobs.append(job)
@@ -408,6 +410,7 @@ def build_preview_from_urls(
             template_body=template_body,
             action=action,
             sender=sender,
+            operator=operator,
         )
         preview.append(pr)
         jobs.append(job)
@@ -449,6 +452,7 @@ def build_jobs_from_profiles(
             template_body=template_body,
             action=action,
             sender=sender,
+            operator=operator,
         )
         preview.append(pr)
         jobs.append(job)

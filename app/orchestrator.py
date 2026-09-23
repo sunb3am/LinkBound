@@ -20,6 +20,7 @@ from .models import (
     ItemStatus,
     RunState,
     SENT_STATUSES,
+    TERMINAL_CONTACTED,
 )
 from .names import slug_from_url, split_full_name
 from .runner import LinkedInRunner, ProfileResult
@@ -252,6 +253,9 @@ class Orchestrator:
         }
         self.current = {}
         self.batch_name = batch_name or self._default_batch_name(len(jobs))
+        self.batch_id, self.batch_public_id = db.create_batch(
+            operator, self.batch_name, action, dry_run, len(jobs)
+        )
         self.state = RunState.RUNNING
         self._task = asyncio.create_task(
             self._run(jobs, action=action, dry_run=dry_run, send_on_mismatch=send_on_mismatch)
@@ -321,9 +325,6 @@ class Orchestrator:
         governor = SafetyGovernor(self.settings.safety, self.operator)
         runner = LinkedInRunner(self.settings, self.operator)
         self._runner = runner
-        self.batch_id, self.batch_public_id = db.create_batch(
-            self.operator, self.batch_name, action, dry_run, len(jobs)
-        )
         behavior = self.settings.behavior
 
         try:
@@ -383,6 +384,12 @@ class Orchestrator:
 
                 # Safety gates only apply to live sends.
                 if not dry_run:
+                    # Preview is a snapshot. Another batch may have contacted
+                    # this person since it was built, including within this run.
+                    if db.is_already_contacted(job["linkedin_url"], TERMINAL_CONTACTED, self.operator):
+                        self._record(job, ItemStatus.SKIPPED_DEDUP, "contacted since preview",
+                                     trace=["skipped before browser action: updated contact history"])
+                        continue
                     if governor.daily_cap_reached():
                         self._emit_state(
                             f"Daily cap of {self.settings.safety.daily_cap} reached. Stopping."
@@ -457,6 +464,16 @@ class Orchestrator:
                     )
                     db.finalize_batch(self.batch_id, "stopped")
             self._emit_state("Hard stopped.")
+        except Exception as exc:
+            self.state = RunState.ERROR
+            if self.batch_id:
+                with contextlib.suppress(Exception):
+                    db.update_batch_counts(
+                        self.batch_id, self.totals["sent"], self.totals["skipped"],
+                        self.totals["failed"], self.totals["flagged"],
+                    )
+                    db.finalize_batch(self.batch_id, "error")
+            self._emit_state(f"Run failed: {exc}")
         finally:
             self._runner = None
             with contextlib.suppress(Exception):
@@ -539,20 +556,8 @@ class Orchestrator:
         action_executed: str = "", captured_name: str = "", degree: str = "",
         headline: str = "",
     ) -> None:
-        self.totals["done"] += 1
-        if status.value in SENT_STATUSES:
-            self.totals["sent"] += 1
-        elif status == ItemStatus.DRY_RUN:
-            self.totals["dry"] += 1
-        elif status == ItemStatus.MISMATCH_FLAGGED:
-            self.totals["flagged"] += 1
-        elif status in _SKIPPED_STATUSES:
-            self.totals["skipped"] += 1
-        else:
-            self.totals["failed"] += 1
-
         full_name = captured_name or job.get("full_name", "")
-        req_id, public_id = db.add_request(
+        req_id, public_id = db.record_outcome(
             batch_id=self.batch_id or 0,
             operator=self.operator,
             linkedin_url=job["linkedin_url"],
@@ -571,23 +576,20 @@ class Orchestrator:
             decision_trace=trace or [],
             screenshot_path=screenshot,
             headline=headline,
+            degree=degree,
         )
 
-        # Permanent contact memory (skip dry runs so they don't poison dedup).
-        if status != ItemStatus.DRY_RUN:
-            db.upsert_contact(
-                linkedin_url=job["linkedin_url"],
-                full_name=full_name,
-                first_name=job.get("first_name", ""),
-                company_csv=job.get("company", ""),
-                last_status=status.value,
-                template_used=job.get("template", ""),
-                message_sent=job.get("message", "") if status.value in SENT_STATUSES else "",
-                operator=self.operator,
-                degree=degree,
-                last_action_type=action_executed,
-                headline=headline,
-            )
+        self.totals["done"] += 1
+        if status.value in SENT_STATUSES:
+            self.totals["sent"] += 1
+        elif status == ItemStatus.DRY_RUN:
+            self.totals["dry"] += 1
+        elif status == ItemStatus.MISMATCH_FLAGGED:
+            self.totals["flagged"] += 1
+        elif status in _SKIPPED_STATUSES:
+            self.totals["skipped"] += 1
+        else:
+            self.totals["failed"] += 1
 
         self._broadcast(
             {

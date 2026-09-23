@@ -255,6 +255,10 @@ function updateOperatorWidget() {
 // ─── Operator selector change ───────────────────────────────────────────────
 $("#operator").addEventListener("change", () => {
   updateOperatorWidget();
+  if (state.activeView === "crm") loadHistory();
+  if (state.activeView === "run") refreshRunStatus();
+  if (state.activeView === "batches") loadBatches();
+  if (state.activeView === "analytics") loadAnalytics();
   // Cancel any in-progress name edit
   $("#opNameEditRow").classList.add("hidden");
   $("#opEditBtn").style.display = "";
@@ -767,10 +771,22 @@ function addFeedItem(ev) {
 
 // ─── CRM (Audience Manager) ────────────────────────────────────────────────
 let crmGridApi = null;
+let crmLoadSeq = 0;
 
 async function loadHistory() {
+  const seq = ++crmLoadSeq;
+  const operator = $("#operator").value;
+  if (!operator) return;
   const search = $("#historySearch").value.trim();
-  const data = await api("/api/contacts?limit=500&search=" + encodeURIComponent(search));
+  let data;
+  try {
+    data = await api("/api/contacts?operator=" + encodeURIComponent(operator)
+      + "&limit=500&search=" + encodeURIComponent(search));
+  } catch (error) {
+    if (seq === crmLoadSeq) showToast("Could not load contacts: " + error.message, "error");
+    return;
+  }
+  if (seq !== crmLoadSeq) return;
 
   if (!crmGridApi) {
     const gridOptions = {
@@ -778,13 +794,12 @@ async function loadHistory() {
       columnDefs: [
         { field: "full_name",     headerName: "Name",        filter: "agTextColumnFilter", flex: 2, cellClass: "cell-name" },
         { field: "company_csv",   headerName: "Company",     filter: "agTextColumnFilter", flex: 2 },
-        { field: "last_status",   headerName: "Status",      filter: "agSetColumnFilter",  flex: 1, cellRenderer: p => badge(p.value) },
+        { field: "last_observed_status", headerName: "Status", filter: "agSetColumnFilter", flex: 1, cellRenderer: p => badge(p.value || (p.data?.has_successful_send ? "sent" : "")) },
         { field: "linkedin_url",  headerName: "LinkedIn URL", flex: 2,
           cellRenderer: p => p.value ? `<a href="${esc(p.value)}" target="_blank" rel="noopener noreferrer" style="color: var(--accent-green); font-family: var(--font-mono); font-size: 0.78rem;">${esc(p.value.replace("https://www.linkedin.com/in/",""))}</a>` : "" },
         { field: "last_action_type", headerName: "Action",   flex: 1, cellRenderer: p => badge(p.value) },
         { field: "degree",        headerName: "Degree",      flex: 1 },
-        { field: "operator",      headerName: "Session",     filter: "agSetColumnFilter", flex: 1 },
-        { field: "last_action_at", headerName: "Last Contacted",
+        { field: "last_observed_at", headerName: "Last Observed",
           valueFormatter: p => p.value ? new Date(p.value).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "",
           flex: 1.5 },
       ],
@@ -807,9 +822,20 @@ $("#btnExportCsv")?.addEventListener("click", () => {
 // ─── Batches ───────────────────────────────────────────────────────────────
 let batchesGridApi = null;
 let selectedBatchId = null;
+let batchesLoadSeq = 0;
 
 async function loadBatches() {
-  const data = await api("/api/batches?limit=50");
+  const seq = ++batchesLoadSeq;
+  const operator = $("#operator").value;
+  if (!operator) return;
+  let data;
+  try {
+    data = await api("/api/batches?operator=" + encodeURIComponent(operator) + "&limit=50");
+  } catch (error) {
+    if (seq === batchesLoadSeq) showToast("Could not load batches: " + error.message, "error");
+    return;
+  }
+  if (seq !== batchesLoadSeq) return;
 
   if (!batchesGridApi) {
     const gridOptions = {
@@ -843,6 +869,10 @@ async function loadBatches() {
   if (selectedBatchId) {
     const stillVisible = (data.batches || []).some(b => b.id === selectedBatchId);
     if (stillVisible) loadBatchDetail(selectedBatchId);
+    else {
+      selectedBatchId = null;
+      $("#batchDetailCard").innerHTML = `<div class="batch-detail-empty">Select a batch to view its history.</div>`;
+    }
   }
 }
 
@@ -856,9 +886,11 @@ function selectBatch(batch) {
 
 async function loadBatchDetail(batchId) {
   const card = $("#batchDetailCard");
+  const operator = $("#operator").value;
   card.innerHTML = `<div class="batch-detail-empty">Loading batch details...</div>`;
   try {
-    const data = await api(`/api/batches/${batchId}`);
+    const data = await api(`/api/batches/${batchId}?operator=${encodeURIComponent(operator)}`);
+    if (operator !== $("#operator").value) return;
     renderBatchDetail(data.batch, data.requests || []);
   } catch (err) {
     card.innerHTML = `<div class="batch-detail-empty error">Could not load batch details: ${esc(err.message)}</div>`;
@@ -934,9 +966,20 @@ function renderBatchRequest(req) {
 // ─── Analytics ─────────────────────────────────────────────────────────────
 let chartInstance = null;
 let templateChartInstance = null;
+let analyticsLoadSeq = 0;
 
 async function loadAnalytics() {
-  const data = await api("/api/analytics/dashboard");
+  const seq = ++analyticsLoadSeq;
+  const operator = $("#operator").value;
+  if (!operator) return;
+  let data;
+  try {
+    data = await api("/api/analytics/dashboard?operator=" + encodeURIComponent(operator));
+  } catch (error) {
+    if (seq === analyticsLoadSeq) showToast("Could not load analytics: " + error.message, "error");
+    return;
+  }
+  if (seq !== analyticsLoadSeq) return;
   $("#kpiTotal").textContent  = data.total_contacted;
   $("#kpiActive").textContent = data.active_campaigns;
   $("#kpiToday").textContent  = data.sent_today;

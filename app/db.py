@@ -17,16 +17,17 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from .models import SENT_STATUSES
+from .models import SENT_STATUSES, TERMINAL_CONTACTED
 
 _LOCK = threading.Lock()
 _CONN: sqlite3.Connection | None = None
 _DB_PATH: Path | None = None
+LEGACY_UNVERIFIED = "legacy_unverified"
 
 
 def _now() -> str:
@@ -42,6 +43,8 @@ def normalize_url(url: str) -> str:
         raw = "https://" + raw
     parts = urlsplit(raw)
     host = (parts.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
     path = (parts.path or "").rstrip("/").lower()
     return f"https://{host}{path}" if host else path
 
@@ -62,10 +65,12 @@ def init_db(db_path: Path) -> None:
         _DB_PATH = db_path
         _CONN = sqlite3.connect(str(db_path), check_same_thread=False)
         _CONN.row_factory = sqlite3.Row
+        _CONN.execute("PRAGMA busy_timeout = 5000")
         _CONN.executescript(
             """
             CREATE TABLE IF NOT EXISTS contacts (
                 linkedin_url   TEXT PRIMARY KEY,
+                normalized_linkedin_url TEXT,
                 full_name      TEXT,
                 first_name     TEXT,
                 company_csv    TEXT,
@@ -100,6 +105,7 @@ def init_db(db_path: Path) -> None:
                 batch_id          INTEGER,
                 operator          TEXT,
                 linkedin_url      TEXT,
+                normalized_linkedin_url TEXT,
                 full_name         TEXT,
                 first_name        TEXT,
                 company_csv       TEXT,
@@ -176,16 +182,119 @@ def init_db(db_path: Path) -> None:
                 created_at TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS account_contacts (
+                operator TEXT NOT NULL,
+                linkedin_url TEXT NOT NULL,
+                last_observed_status TEXT,
+                degree TEXT,
+                last_action_type TEXT,
+                first_seen_at TEXT,
+                last_observed_at TEXT,
+                PRIMARY KEY (operator, linkedin_url)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_requests_batch ON outbound_requests(batch_id);
             CREATE INDEX IF NOT EXISTS idx_requests_created ON outbound_requests(created_at);
             """
         )
-        # Migrate older rows / add enrichment columns.
-        _ensure_column(_CONN, "contacts", "degree", "degree TEXT")
-        _ensure_column(_CONN, "contacts", "last_action_type", "last_action_type TEXT")
-        _ensure_column(_CONN, "contacts", "headline", "headline TEXT")
-        _ensure_column(_CONN, "outbound_requests", "headline", "headline TEXT")
-        _CONN.commit()
+        try:
+            # DDL bootstrap above is idempotent. Column changes, data backfill,
+            # indexes, and user_version advance commit as one migration unit.
+            _CONN.execute("BEGIN")
+            _ensure_column(_CONN, "contacts", "degree", "degree TEXT")
+            _ensure_column(_CONN, "contacts", "last_action_type", "last_action_type TEXT")
+            _ensure_column(_CONN, "contacts", "headline", "headline TEXT")
+            _ensure_column(_CONN, "contacts", "normalized_linkedin_url", "normalized_linkedin_url TEXT")
+            _ensure_column(_CONN, "outbound_requests", "headline", "headline TEXT")
+            _ensure_column(_CONN, "outbound_requests", "normalized_linkedin_url", "normalized_linkedin_url TEXT")
+            _migrate_account_contacts(_CONN)
+            _CONN.execute("CREATE INDEX IF NOT EXISTS idx_requests_normalized_status ON outbound_requests(normalized_linkedin_url, status)")
+            _CONN.execute("CREATE INDEX IF NOT EXISTS idx_contacts_normalized_url ON contacts(normalized_linkedin_url)")
+            _CONN.commit()
+        except Exception:
+            _CONN.rollback()
+            _CONN.close()
+            _CONN = None
+            _DB_PATH = None
+            raise
+
+
+def _migrate_account_contacts(conn: sqlite3.Connection) -> None:
+    """Versioned, conservative backfill from request attribution and legacy rows."""
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if version >= 2:
+        return
+    now = _now()
+    # Clear statuses that version 1 may have copied from later failures/skips.
+    # The immutable request history below reconstructs the latest positive fact.
+    for row in conn.execute("SELECT operator, linkedin_url, last_observed_status FROM account_contacts").fetchall():
+        if row[2] not in TERMINAL_CONTACTED:
+            conn.execute(
+                "UPDATE account_contacts SET last_observed_status=NULL, last_observed_at=NULL WHERE operator=? AND linkedin_url=?",
+                (row[0], row[1]),
+            )
+    history = conn.execute(
+        "SELECT operator, linkedin_url, status, created_at, completed_at FROM outbound_requests ORDER BY id"
+    ).fetchall()
+    # A legacy profile row is attributable only when it names an operator and
+    # request history does not show a conflicting operator for that URL.
+    request_owners: dict[str, set[str]] = {}
+    for owner, request_url in conn.execute("SELECT operator, linkedin_url FROM outbound_requests"):
+        normalized = normalize_url(request_url or "")
+        if normalized and (owner or "").strip():
+            request_owners.setdefault(normalized, set()).add(owner.strip())
+    for row in conn.execute("SELECT rowid AS db_rowid, * FROM contacts").fetchall():
+        contact = dict(row)
+        operator = (contact.get("operator") or "").strip()
+        url = normalize_url(contact.get("linkedin_url") or "")
+        if not url:
+            continue
+        conn.execute("UPDATE contacts SET normalized_linkedin_url=? WHERE rowid=?", (url, row["db_rowid"]))
+        if not operator:
+            continue
+        owners = request_owners.get(url, set())
+        if owners - {operator}:
+            continue
+        # A mutable legacy summary is not proof that a send occurred.
+        legacy_status = (
+            LEGACY_UNVERIFIED if contact.get("last_status") in TERMINAL_CONTACTED else None
+        )
+        conn.execute(
+            """INSERT INTO account_contacts
+                   (operator, linkedin_url, last_observed_status, degree, last_action_type,
+                    first_seen_at, last_observed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(operator, linkedin_url) DO UPDATE SET
+                   last_observed_status=COALESCE(account_contacts.last_observed_status, excluded.last_observed_status),
+                   last_observed_at=COALESCE(account_contacts.last_observed_at, excluded.last_observed_at)""",
+            (operator, url, legacy_status, contact.get("degree"),
+             contact.get("last_action_type"), contact.get("first_seen_at") or now,
+             contact.get("last_action_at") if legacy_status else None),
+        )
+    # Request rows are the durable attempt ledger. Create rows for failed/skipped
+    # attempts, but refresh relationship status only for positive observations.
+    for row in history:
+        operator, url = (row[0] or "").strip(), normalize_url(row[1] or "")
+        if not operator or not url or row[2] == "dry_run":
+            continue
+        observed_at = row[4] or row[3] or now
+        positive_status = row[2] if row[2] in TERMINAL_CONTACTED else None
+        conn.execute(
+            """INSERT INTO account_contacts
+                   (operator, linkedin_url, last_observed_status, first_seen_at, last_observed_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(operator, linkedin_url) DO UPDATE SET
+                   last_observed_status=COALESCE(excluded.last_observed_status, account_contacts.last_observed_status),
+                   last_observed_at=COALESCE(excluded.last_observed_at, account_contacts.last_observed_at)""",
+            (operator, url, positive_status, row[3] or observed_at,
+             observed_at if positive_status else None),
+        )
+    for row in conn.execute("SELECT rowid AS db_rowid, linkedin_url FROM outbound_requests").fetchall():
+        normalized = normalize_url(row["linkedin_url"] or "")
+        if normalized:
+            conn.execute("UPDATE outbound_requests SET normalized_linkedin_url=? WHERE rowid=?",
+                (normalized, row["db_rowid"]))
+    conn.execute("PRAGMA user_version = 2")
 
 
 def close_db() -> None:
@@ -207,82 +316,129 @@ def _conn() -> sqlite3.Connection:
 def get_contact(linkedin_url: str) -> dict[str, Any] | None:
     key = normalize_url(linkedin_url)
     with _LOCK:
-        cur = _conn().execute("SELECT * FROM contacts WHERE linkedin_url = ?", (key,))
+        cur = _conn().execute(
+            "SELECT * FROM contacts WHERE normalized_linkedin_url = ? OR linkedin_url = ? LIMIT 1",
+            (key, key),
+        )
         row = cur.fetchone()
         return dict(row) if row else None
 
 
-def is_already_contacted(linkedin_url: str, contacted_statuses: set[str]) -> bool:
-    contact = get_contact(linkedin_url)
-    return bool(contact and contact.get("last_status") in contacted_statuses)
-
-
-def upsert_contact(
-    *,
-    linkedin_url: str,
-    full_name: str,
-    first_name: str,
-    company_csv: str,
-    last_status: str,
-    template_used: str,
-    message_sent: str,
-    operator: str,
-    degree: str = "",
-    last_action_type: str = "",
-    headline: str = "",
-) -> None:
+def get_account_contact(operator: str, linkedin_url: str) -> dict[str, Any] | None:
+    """Return one account-scoped relationship, with confirmed send history attached."""
     key = normalize_url(linkedin_url)
-    now = _now()
     with _LOCK:
         conn = _conn()
-        existing = conn.execute(
-            "SELECT linkedin_url FROM contacts WHERE linkedin_url = ?", (key,)
+        row = conn.execute(
+            "SELECT * FROM account_contacts WHERE operator=? AND linkedin_url=?",
+            (operator, key),
         ).fetchone()
-        if existing:
-            conn.execute(
-                """
-                UPDATE contacts
-                   SET full_name=?, first_name=?, company_csv=?, last_status=?,
-                       template_used=?, message_sent=?, operator=?, degree=?,
-                       last_action_type=?, headline=?, last_action_at=?
-                 WHERE linkedin_url=?
-                """,
-                (full_name, first_name, company_csv, last_status, template_used,
-                 message_sent, operator, degree, last_action_type, headline, now, key),
-            )
-        else:
-            conn.execute(
-                """
-                INSERT INTO contacts
-                    (linkedin_url, full_name, first_name, company_csv, last_status,
-                     template_used, message_sent, operator, degree, last_action_type,
-                     headline, first_seen_at, last_action_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (key, full_name, first_name, company_csv, last_status, template_used,
-                 message_sent, operator, degree, last_action_type, headline, now, now),
-            )
-        conn.commit()
+        if not row:
+            return None
+        result = dict(row)
+        result["has_successful_send"] = _has_successful_send(conn, key, operator)
+        return result
 
 
-def list_contacts(search: str = "", limit: int = 500) -> list[dict[str, Any]]:
+def list_account_contacts(operator: str, search: str = "", limit: int = 500) -> list[dict[str, Any]]:
+    """List relationships for exactly one sender account."""
     with _LOCK:
         if search:
             like = f"%{search.lower()}%"
-            cur = _conn().execute(
-                """
-                SELECT * FROM contacts
-                 WHERE lower(full_name) LIKE ? OR lower(company_csv) LIKE ?
-                       OR lower(linkedin_url) LIKE ?
-                 ORDER BY last_action_at DESC LIMIT ?
-                """,
-                (like, like, like, limit),
-            )
+            rows = _conn().execute(
+                """SELECT ac.*, c.full_name, c.first_name, c.company_csv, c.headline
+                     FROM account_contacts ac LEFT JOIN contacts c ON c.rowid=(
+                       SELECT p.rowid FROM contacts p
+                        WHERE p.normalized_linkedin_url=ac.linkedin_url
+                        ORDER BY COALESCE(p.last_action_at, p.first_seen_at, '') DESC, p.rowid DESC LIMIT 1)
+                    WHERE ac.operator=? AND (lower(COALESCE(c.full_name,'')) LIKE ?
+                       OR lower(COALESCE(c.company_csv,'')) LIKE ? OR lower(ac.linkedin_url) LIKE ?)
+                    ORDER BY ac.last_observed_at DESC LIMIT ?""",
+                (operator, like, like, like, limit),
+            ).fetchall()
         else:
-            cur = _conn().execute(
-                "SELECT * FROM contacts ORDER BY last_action_at DESC LIMIT ?", (limit,)
+            rows = _conn().execute(
+                """SELECT ac.*, c.full_name, c.first_name, c.company_csv, c.headline
+                     FROM account_contacts ac LEFT JOIN contacts c ON c.rowid=(
+                       SELECT p.rowid FROM contacts p
+                        WHERE p.normalized_linkedin_url=ac.linkedin_url
+                        ORDER BY COALESCE(p.last_action_at, p.first_seen_at, '') DESC, p.rowid DESC LIMIT 1)
+                    WHERE ac.operator=? ORDER BY ac.last_observed_at DESC LIMIT ?""",
+                (operator, limit),
+            ).fetchall()
+        results = [dict(row) for row in rows]
+        for result in results:
+            result["has_successful_send"] = _has_successful_send(
+                _conn(), result["linkedin_url"], result["operator"]
             )
-        return [dict(r) for r in cur.fetchall()]
+        return results
+
+
+def _has_successful_send(conn: sqlite3.Connection, key: str, operator: str | None = None) -> bool:
+    placeholders = ",".join("?" for _ in SENT_STATUSES)
+    sql = f"SELECT 1 FROM outbound_requests WHERE normalized_linkedin_url=? AND status IN ({placeholders})"
+    args: tuple[Any, ...] = (key, *SENT_STATUSES)
+    if operator is not None:
+        # The caller may want account-only history. Suppression below defaults
+        # to all accounts because confirmed send history is global policy.
+        sql += " AND operator=?"
+        args += (operator,)
+    return conn.execute(sql + " LIMIT 1", args).fetchone() is not None
+
+
+def is_already_contacted(
+    linkedin_url: str, contacted_statuses: set[str], operator: str
+) -> bool:
+    """Suppress any confirmed send globally, plus contacted observations on this account."""
+    return should_suppress_contact(linkedin_url, contacted_statuses, operator)
+
+
+def should_suppress_contact(
+    linkedin_url: str, contacted_statuses: set[str], operator: str,
+    *, global_suppression: bool = True, allow_override: bool = False,
+) -> bool:
+    """Policy hook for global confirmed-send suppression and future reviewed overrides."""
+    key = normalize_url(linkedin_url)
+    if not key:
+        return False
+    with _LOCK:
+        conn = _conn()
+        if not allow_override and global_suppression and _has_successful_send(conn, key):
+            return True
+        row = conn.execute(
+            "SELECT last_observed_status FROM account_contacts WHERE operator=? AND linkedin_url=?",
+            (operator, key),
+        ).fetchone()
+        return bool(row and row["last_observed_status"] in (contacted_statuses | {LEGACY_UNVERIFIED}))
+
+
+def _upsert_profile_details(conn: sqlite3.Connection, *, linkedin_url: str,
+    full_name: str, first_name: str, company_csv: str, headline: str, now: str) -> None:
+    """Refresh shared person details without treating legacy outreach fields as truth."""
+    existing = conn.execute(
+        "SELECT rowid FROM contacts WHERE normalized_linkedin_url = ? OR linkedin_url = ? ORDER BY rowid DESC LIMIT 1",
+        (normalize_url(linkedin_url), linkedin_url),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            """UPDATE contacts SET
+                   full_name=COALESCE(NULLIF(?, ''), full_name),
+                   first_name=COALESCE(NULLIF(?, ''), first_name),
+                   company_csv=COALESCE(NULLIF(?, ''), company_csv),
+                   headline=COALESCE(NULLIF(?, ''), headline),
+                   normalized_linkedin_url=? WHERE rowid=?""",
+            (full_name, first_name, company_csv, headline, normalize_url(linkedin_url), existing["rowid"]),
+        )
+    else:
+        conn.execute(
+            """INSERT INTO contacts
+                   (linkedin_url, normalized_linkedin_url, full_name, first_name, company_csv, headline, first_seen_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (linkedin_url, normalize_url(linkedin_url), full_name, first_name, company_csv, headline, now),
+        )
+def list_contacts(operator: str, search: str = "", limit: int = 500) -> list[dict[str, Any]]:
+    """Public contact listing is account-scoped; profile details are joined as attributes."""
+    return list_account_contacts(operator=operator, search=search, limit=limit)
 
 
 def count_sent_today(operator: str) -> int:
@@ -341,9 +497,12 @@ def finalize_batch(batch_id: int, status: str) -> None:
         conn.commit()
 
 
-def list_batches(limit: int = 50) -> list[dict[str, Any]]:
+def list_batches(operator: str, limit: int = 50) -> list[dict[str, Any]]:
     with _LOCK:
-        cur = _conn().execute("SELECT * FROM batches ORDER BY id DESC LIMIT ?", (limit,))
+        cur = _conn().execute(
+            "SELECT * FROM batches WHERE operator=? ORDER BY id DESC LIMIT ?",
+            (operator, limit),
+        )
         return [dict(r) for r in cur.fetchall()]
 
 
@@ -355,50 +514,75 @@ def get_batch(batch_id: int) -> dict[str, Any] | None:
 
 # ---- outbound requests (audit trail) --------------------------------------
 
-def add_request(
-    *,
-    batch_id: int,
-    operator: str,
-    linkedin_url: str,
-    full_name: str,
-    first_name: str,
-    company_csv: str,
-    role: str,
-    email: str,
-    action_requested: str,
-    action_executed: str,
-    template_id: int | None,
-    template_name: str,
-    message_rendered: str,
-    status: str,
-    detail: str = "",
-    decision_trace: list[Any] | None = None,
-    screenshot_path: str = "",
-    headline: str = "",
-) -> tuple[int, str]:
+def _insert_request(conn: sqlite3.Connection, **data: Any) -> tuple[int, str]:
     now = _now()
-    trace_json = json.dumps(decision_trace or [])
-    with _LOCK:
-        conn = _conn()
-        cur = conn.execute(
+    trace_json = json.dumps(data.get("decision_trace") or [])
+    cur = conn.execute(
             """
             INSERT INTO outbound_requests
-                (batch_id, operator, linkedin_url, full_name, first_name, company_csv,
+                (batch_id, operator, linkedin_url, normalized_linkedin_url, full_name, first_name, company_csv,
                  role, email, action_requested, action_executed, template_id,
                  template_name, message_rendered, status, detail, decision_trace,
                  screenshot_path, headline, created_at, completed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (batch_id, operator, normalize_url(linkedin_url), full_name, first_name,
-             company_csv, role, email, action_requested, action_executed, template_id,
-             template_name, message_rendered, status, detail, trace_json,
-             screenshot_path, headline, now, now),
+            (data["batch_id"], data["operator"], data["linkedin_url"], normalize_url(data["linkedin_url"]),
+             data["full_name"], data["first_name"], data["company_csv"], data["role"],
+             data["email"], data["action_requested"], data["action_executed"],
+             data["template_id"], data["template_name"], data["message_rendered"],
+             data["status"], data.get("detail", ""), trace_json,
+             data.get("screenshot_path", ""), data.get("headline", ""), now, now),
         )
-        req_id = int(cur.lastrowid)
-        public_id = f"OBR-{req_id:06d}"
-        conn.execute("UPDATE outbound_requests SET public_id=? WHERE id=?", (public_id, req_id))
-        conn.commit()
-        return req_id, public_id
+    req_id = int(cur.lastrowid)
+    public_id = f"OBR-{req_id:06d}"
+    conn.execute("UPDATE outbound_requests SET public_id=? WHERE id=?", (public_id, req_id))
+    return req_id, public_id
+
+
+def record_outcome(
+    *, batch_id: int, operator: str, linkedin_url: str, full_name: str,
+    first_name: str, company_csv: str, role: str, email: str,
+    action_requested: str, action_executed: str, template_id: int | None,
+    template_name: str, message_rendered: str, status: str, detail: str = "",
+    decision_trace: list[Any] | None = None, screenshot_path: str = "",
+    headline: str = "", degree: str = "",
+) -> tuple[int, str]:
+    """Atomically append an attempt and refresh account/profile observations."""
+    key = normalize_url(linkedin_url)
+    now = _now()
+    with _LOCK:
+        conn = _conn()
+        try:
+            conn.execute("BEGIN")
+            result = _insert_request(conn, batch_id=batch_id, operator=operator,
+                linkedin_url=key, full_name=full_name, first_name=first_name,
+                company_csv=company_csv, role=role, email=email,
+                action_requested=action_requested, action_executed=action_executed,
+                template_id=template_id, template_name=template_name,
+                message_rendered=message_rendered, status=status, detail=detail,
+                decision_trace=decision_trace, screenshot_path=screenshot_path, headline=headline)
+            if status != "dry_run":
+                positive_status = status if status in TERMINAL_CONTACTED else None
+                conn.execute(
+                    """INSERT INTO account_contacts
+                           (operator, linkedin_url, last_observed_status, degree,
+                            last_action_type, first_seen_at, last_observed_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(operator, linkedin_url) DO UPDATE SET
+                           last_observed_status=COALESCE(excluded.last_observed_status, account_contacts.last_observed_status),
+                           degree=CASE WHEN excluded.last_observed_status IS NULL OR excluded.degree='' THEN account_contacts.degree ELSE excluded.degree END,
+                           last_action_type=CASE WHEN excluded.last_observed_status IS NULL THEN account_contacts.last_action_type ELSE excluded.last_action_type END,
+                           last_observed_at=COALESCE(excluded.last_observed_at, account_contacts.last_observed_at)""",
+                    (operator, key, positive_status, degree, action_executed, now,
+                     now if positive_status else None),
+                )
+                _upsert_profile_details(conn, linkedin_url=key, full_name=full_name,
+                    first_name=first_name, company_csv=company_csv, headline=headline, now=now)
+            conn.commit()
+            return result
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def list_requests(batch_id: int) -> list[dict[str, Any]]:
@@ -415,6 +599,85 @@ def list_requests(batch_id: int) -> list[dict[str, Any]]:
                 d["decision_trace"] = []
             rows.append(d)
         return rows
+
+
+def list_contact_timeline(operator: str, linkedin_url: str) -> list[dict[str, Any]]:
+    """Return account-scoped outbound history plus shared tags and notes for a profile."""
+    key = normalize_url(linkedin_url)
+    with _LOCK:
+        conn = _conn()
+        events: list[dict[str, Any]] = []
+        requests = conn.execute(
+            """SELECT * FROM outbound_requests
+                WHERE operator=? AND normalized_linkedin_url=?
+                ORDER BY COALESCE(completed_at, created_at) DESC, id DESC""",
+            (operator, key),
+        ).fetchall()
+        for row in requests:
+            event = dict(row)
+            try:
+                event["decision_trace"] = json.loads(event.get("decision_trace") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                event["decision_trace"] = []
+            event.update(type="outbound_request", timestamp=event.get("completed_at") or event.get("created_at"))
+            events.append(event)
+
+        # These are profile annotations, not outreach history, so they remain
+        # shared across sender accounts while outbound rows are account-scoped.
+        for row in conn.execute("SELECT id, contact_url, tag, created_at FROM contact_tags"):
+            if normalize_url(row["contact_url"] or "") == key:
+                events.append({"type": "tag", "id": row["id"], "tag": row["tag"], "timestamp": row["created_at"]})
+        for row in conn.execute("SELECT id, contact_url, note, created_at FROM contact_notes"):
+            if normalize_url(row["contact_url"] or "") == key:
+                events.append({"type": "note", "id": row["id"], "note": row["note"], "timestamp": row["created_at"]})
+        events.sort(key=lambda item: item.get("timestamp") or "", reverse=True)
+        return events
+
+
+def dashboard_metrics(operator: str) -> dict[str, Any]:
+    """Return outbound metrics for a single sender account."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+    sent = tuple(SENT_STATUSES)
+    placeholders = ",".join("?" for _ in sent)
+    with _LOCK:
+        conn = _conn()
+        total = conn.execute(
+            f"SELECT COUNT(DISTINCT normalized_linkedin_url) AS c FROM outbound_requests WHERE operator=? AND status IN ({placeholders})",
+            (operator, *sent),
+        ).fetchone()["c"]
+        active = conn.execute(
+            "SELECT COUNT(*) AS c FROM campaigns WHERE operator=? AND status='active'",
+            (operator,),
+        ).fetchone()["c"]
+        today_count = conn.execute(
+            f"SELECT COUNT(*) AS c FROM outbound_requests WHERE operator=? AND status IN ({placeholders}) AND substr(created_at, 1, 10)=?",
+            (operator, *sent, today),
+        ).fetchone()["c"]
+        over_time = [dict(row) for row in conn.execute(
+            f"""SELECT substr(created_at, 1, 10) AS date, COUNT(*) AS count
+                   FROM outbound_requests WHERE operator=? AND status IN ({placeholders})
+                     AND created_at>=? GROUP BY date ORDER BY date""",
+            (operator, *sent, since),
+        )]
+        breakdown = [dict(row) for row in conn.execute(
+            "SELECT status, COUNT(*) AS count FROM outbound_requests WHERE operator=? GROUP BY status",
+            (operator,),
+        )]
+        templates = [dict(row) for row in conn.execute(
+            f"""SELECT template_name, COUNT(*) AS count FROM outbound_requests
+                   WHERE operator=? AND status IN ({placeholders})
+                   GROUP BY template_name ORDER BY count DESC LIMIT 10""",
+            (operator, *sent),
+        )]
+    return {
+        "total_contacted": total,
+        "active_campaigns": active,
+        "sent_today": today_count,
+        "sends_over_time": over_time,
+        "status_breakdown": breakdown,
+        "template_performance": templates,
+    }
 
 
 # ---- templates ------------------------------------------------------------
@@ -533,6 +796,11 @@ def create_operator(key: str, label: str, profile_dir: str) -> None:
 def delete_operator(key: str) -> bool:
     with _LOCK:
         conn = _conn()
+        for table in ("batches", "outbound_requests", "account_contacts", "campaigns"):
+            if conn.execute(
+                f"SELECT 1 FROM {table} WHERE operator=? LIMIT 1", (key,)
+            ).fetchone():
+                raise ValueError("This account has history and cannot be deleted.")
         cur = conn.execute("DELETE FROM operators WHERE key=?", (key,))
         conn.commit()
         return cur.rowcount > 0

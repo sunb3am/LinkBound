@@ -9,29 +9,17 @@ from .models import ContactNoteCreate, ContactTagCreate
 router = APIRouter(prefix="/api/crm", tags=["crm"])
 
 @router.get("/contacts/{linkedin_url_enc}/timeline")
-async def contact_timeline(linkedin_url_enc: str):
-    """Get the full history of all outbound requests for a given contact."""
+async def contact_timeline(linkedin_url_enc: str, operator: str):
+    """Get one sender's outbound history and shared person annotations."""
     url = db.normalize_url(linkedin_url_enc)
-    with db._LOCK:
-        cur = db._conn().execute(
-            "SELECT * FROM outbound_requests WHERE linkedin_url = ? ORDER BY created_at DESC", 
-            (url,)
-        )
-        requests = [dict(r) for r in cur.fetchall()]
-        
-        cur = db._conn().execute(
-            "SELECT * FROM contact_tags WHERE contact_url = ? ORDER BY created_at DESC", 
-            (url,)
-        )
-        tags = [dict(r) for r in cur.fetchall()]
-        
-        cur = db._conn().execute(
-            "SELECT * FROM contact_notes WHERE contact_url = ? ORDER BY created_at DESC", 
-            (url,)
-        )
-        notes = [dict(r) for r in cur.fetchall()]
-        
-    return {"requests": requests, "tags": tags, "notes": notes}
+    if operator not in {op["key"] for op in db.list_operators()}:
+        raise HTTPException(400, "Unknown operator.")
+    events = db.list_contact_timeline(operator, url)
+    return {
+        "requests": [item for item in events if item["type"] == "outbound_request"],
+        "tags": [item for item in events if item["type"] == "tag"],
+        "notes": [item for item in events if item["type"] == "note"],
+    }
 
 @router.post("/contacts/{linkedin_url_enc}/tags")
 async def add_tag(linkedin_url_enc: str, body: ContactTagCreate):

@@ -38,18 +38,22 @@ from .models import (
     TrainVoiceRequest,
     UrlsPreviewRequest,
 )
-from .orchestrator import Orchestrator
-from .settings import load_settings
+from .coordinator import RunCoordinator
+from .settings import OperatorConfig, load_settings
 
 settings = load_settings()
 db.init_db(settings.data_dir / "outbound.db")
 db.seed_templates(settings.templates, default_action=ActionType.CONNECT_NOTE.value)
-db.seed_operators(settings.operators)
+if not db.list_operators():
+    db.seed_operators(settings.operators)
+# SQLite is the account registry after the initial configuration seed.
+settings.operators = {
+    op["key"]: OperatorConfig(key=op["key"], label=op["label"], profile_dir=op["profile_dir"])
+    for op in db.list_operators()
+}
 
 app = FastAPI(title="LinkBound · LinkedIn Outbound", version="2.0.0")
-orchestrator = Orchestrator(settings)
 gemini = GeminiClient(settings.ai)
-orchestrator.gemini = gemini  # used for optional per-profile AI personalization
 
 app.include_router(campaigns.router)
 app.include_router(crm.router)
@@ -58,84 +62,10 @@ app.include_router(export.router)
 
 STATIC_DIR = settings.root / "static"
 
-import json
-from datetime import datetime, timezone
-
 # In-memory store of parsed uploads, keyed by upload_id.
 _UPLOADS: dict[str, dict] = {}
 
-class OrchestratorManager:
-    def __init__(self, settings):
-        self.settings = settings
-        self.orchestrators: dict[str, Orchestrator] = {}
-        self._subscribers: set[asyncio.Queue] = set()
-
-    def get(self, operator: str) -> Orchestrator:
-        if operator not in self.orchestrators:
-            o = Orchestrator(self.settings)
-            o.gemini = gemini
-            for q in self._subscribers:
-                o._subscribers.add(q)
-            self.orchestrators[operator] = o
-        return self.orchestrators[operator]
-
-    def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=400)
-        self._subscribers.add(q)
-        for o in self.orchestrators.values():
-            o._subscribers.add(q)
-        return q
-
-    def unsubscribe(self, q: asyncio.Queue) -> None:
-        self._subscribers.discard(q)
-        for o in self.orchestrators.values():
-            o.unsubscribe(q)
-
-    def snapshot(self) -> dict:
-        # Return the snapshot of the first busy orchestrator, or default
-        for o in self.orchestrators.values():
-            if o.is_busy():
-                return o.snapshot()
-        if self.orchestrators:
-            return next(iter(self.orchestrators.values())).snapshot()
-        # default empty
-        return {"state": "idle", "totals": {}, "current": {}}
-
-manager = OrchestratorManager(settings)
-
-async def _scheduler_loop():
-    """Background loop that polls for scheduled campaigns and executes them."""
-    while True:
-        try:
-            now = datetime.now(timezone.utc).isoformat()
-            with db._LOCK:
-                cur = db._conn().execute("SELECT * FROM campaigns WHERE status='scheduled'")
-                campaigns = [dict(r) for r in cur.fetchall()]
-                
-            for c in campaigns:
-                try:
-                    s_json = json.loads(c.get("scheduling_json") or "{}")
-                    start_time = s_json.get("start_time")
-                    if start_time and start_time <= now:
-                        operator = c["operator"]
-                        orch = manager.get(operator)
-                        if not orch.is_busy():
-                            # Mock jobs for a campaign since we don't have CSV links directly in campaigns yet
-                            # In a real app, we'd fetch the contacts associated with this campaign.
-                            # For now, we just mark it as running and then finished.
-                            with db._LOCK:
-                                conn = db._conn()
-                                conn.execute("UPDATE campaigns SET status='running' WHERE id=?", (c["id"],))
-                                conn.commit()
-                except Exception as e:
-                    print(f"Scheduler error for campaign {c['id']}: {e}")
-        except Exception as e:
-            print(f"Scheduler loop error: {e}")
-        await asyncio.sleep(60)
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(_scheduler_loop())
+manager = RunCoordinator(settings, gemini)
 
 
 def _parse_action(raw: str) -> ActionType:
@@ -287,15 +217,26 @@ async def create_operator(body: OperatorCreate):
         raise HTTPException(409, "Operator already exists.")
         
     db.create_operator(key, name, f"profiles/{key}")
-    # Also add it dynamically to settings so current run validates
-    from .settings import OperatorConfig
+    # Keep the runtime profile lookup in sync with the SQLite account registry.
     settings.operators[key] = OperatorConfig(key=key, label=name, profile_dir=f"profiles/{key}")
     
     return {"key": key, "label": name}
 
 @app.delete("/api/operators/{key}")
 async def delete_operator(key: str):
-    if not db.delete_operator(key):
+    active = manager.active()
+    if active and active.operator == key:
+        raise HTTPException(409, "This account has an active browser operation.")
+    account = next((op for op in db.list_operators() if op["key"] == key), None)
+    if account:
+        profile = settings.root / account["profile_dir"]
+        if profile.is_dir() and any(profile.iterdir()):
+            raise HTTPException(409, "This account has a browser profile and cannot be deleted.")
+    try:
+        removed = db.delete_operator(key)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not removed:
         raise HTTPException(404, "Operator not found.")
     if key in settings.operators:
         del settings.operators[key]
@@ -366,25 +307,23 @@ async def start(req: StartRequest, x_user_gemini_key: str | None = Header(None),
         raise HTTPException(404, "Upload not found. Re-run the preview.")
     if upload["operator"] != req.operator:
         raise HTTPException(400, "Operator does not match the previewed batch.")
-    orch = manager.get(req.operator)
-    if orch.is_busy():
-        raise HTTPException(409, "A run is already in progress for this operator.")
-
     if req.ai_personalize and not gemini.available:
         raise HTTPException(400, "AI personalization requested but AI is not enabled/configured.")
 
-    await orch.start(
-        upload["jobs"],
-        req.operator,
-        action=_parse_action(req.action).value,
-        dry_run=req.dry_run,
-        batch_name=req.batch_name,
-        send_on_mismatch=req.send_on_mismatch,
-        ai_personalize=req.ai_personalize,
-        ai_voice=req.ai_voice,
-        custom_gemini_key=x_user_gemini_key,
-        custom_gemini_model=x_user_gemini_model,
-    )
+    try:
+        orch = await manager.start(
+            req.operator, upload["jobs"],
+            action=_parse_action(req.action).value,
+            dry_run=req.dry_run,
+            batch_name=req.batch_name,
+            send_on_mismatch=req.send_on_mismatch,
+            ai_personalize=req.ai_personalize,
+            ai_voice=req.ai_voice,
+            custom_gemini_key=x_user_gemini_key,
+            custom_gemini_model=x_user_gemini_model,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
     return ControlResponse(state=orch.state.value,
                            message=("Dry run started." if req.dry_run else "Run started."))
 
@@ -398,12 +337,8 @@ async def resolve_names(req: ResolveNamesRequest):
         raise HTTPException(404, "Upload not found. Re-run the preview.")
     if req.mode == "ai" and not gemini.available:
         raise HTTPException(400, "AI is not enabled/configured.")
-    if orchestrator.is_busy():
-        raise HTTPException(409, "Busy: a run or resolve is already in progress.")
     try:
-        updated = await orchestrator.resolve_names(
-            upload["jobs"], upload["operator"], mode=req.mode, gemini=gemini
-        )
+        updated = await manager.resolve_names(upload["operator"], upload["jobs"], mode=req.mode)
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {"updated": updated}
@@ -528,26 +463,30 @@ async def hard_stop():
     return ControlResponse(state=state, message=msg)
 
 @app.get("/api/status")
-async def status():
-    return manager.snapshot()
+async def status(operator: str | None = None):
+    return manager.snapshot(operator)
 
 
 # ---- history / analytics --------------------------------------------------
 
 @app.get("/api/contacts")
-async def contacts(search: str = "", limit: int = 500):
-    return {"contacts": db.list_contacts(search=search, limit=limit)}
+async def contacts(operator: str, search: str = "", limit: int = 500):
+    if operator not in {op["key"] for op in db.list_operators()}:
+        raise HTTPException(400, "Unknown operator.")
+    return {"contacts": db.list_contacts(operator=operator, search=search, limit=limit)}
 
 
 @app.get("/api/batches")
-async def batches(limit: int = 50):
-    return {"batches": db.list_batches(limit=limit)}
+async def batches(operator: str, limit: int = 50):
+    if operator not in {op["key"] for op in db.list_operators()}:
+        raise HTTPException(400, "Unknown operator.")
+    return {"batches": db.list_batches(operator=operator, limit=limit)}
 
 
 @app.get("/api/batches/{batch_id}")
-async def batch_detail(batch_id: int):
+async def batch_detail(batch_id: int, operator: str):
     batch = db.get_batch(batch_id)
-    if not batch:
+    if not batch or batch["operator"] != operator:
         raise HTTPException(404, "Batch not found.")
     return {"batch": batch, "requests": db.list_requests(batch_id)}
 
@@ -597,7 +536,7 @@ async def require_api_key(x_api_key: str = Header(default="")) -> str:
 
 @app.get("/api/v1/health")
 async def v1_health():
-    return {"ok": True, "version": app.version, "busy": orchestrator.is_busy()}
+    return {"ok": True, "version": app.version, "busy": manager.active() is not None}
 
 
 @app.get("/api/v1/templates")
@@ -614,8 +553,6 @@ async def v1_enqueue(req: EnqueueRequest, _key: str = Depends(require_api_key)):
         raise HTTPException(400, f"Unknown operator '{req.operator}'.")
     if not req.profiles:
         raise HTTPException(400, "No profiles provided.")
-    if orchestrator.is_busy():
-        raise HTTPException(409, "A run is already in progress.")
     act = _parse_action(req.action)
     tid, tname, body = _resolve_default_template(req.template_id, req.message_template)
     if act in {ActionType.CONNECT_NOTE, ActionType.INMAIL, ActionType.MESSAGE} and not body.strip():
@@ -628,22 +565,25 @@ async def v1_enqueue(req: EnqueueRequest, _key: str = Depends(require_api_key)):
         settings, req.operator, profiles,
         action=act, template_id=tid, template_name=tname, template_body=body,
     )
-    await orchestrator.start(
-        jobs, req.operator,
-        action=act.value, dry_run=req.dry_run, batch_name=req.batch_name,
-        send_on_mismatch=req.send_on_mismatch, ai_personalize=req.ai_personalize,
-        ai_voice=req.ai_voice,
-        webhook_url=req.webhook_url or settings.api.default_webhook,
-    )
+    try:
+        orch = await manager.start(
+            req.operator, jobs,
+            action=act.value, dry_run=req.dry_run, batch_name=req.batch_name,
+            send_on_mismatch=req.send_on_mismatch, ai_personalize=req.ai_personalize,
+            ai_voice=req.ai_voice,
+            webhook_url=req.webhook_url or settings.api.default_webhook,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
     sendable = sum(1 for j in jobs if j["precomputed_status"] == "queued")
     return EnqueueResponse(
-        batch_id=orchestrator.batch_id or 0,
-        batch_public_id=orchestrator.batch_public_id,
+        batch_id=orch.batch_id or 0,
+        batch_public_id=orch.batch_public_id,
         operator=req.operator,
         action=act.value,
         total=len(jobs),
         sendable=sendable,
-        state=orchestrator.state.value,
+        state=orch.state.value,
     )
 
 
@@ -656,8 +596,8 @@ async def v1_batch(batch_id: int, _key: str = Depends(require_api_key)):
 
 
 @app.get("/api/v1/status")
-async def v1_status(_key: str = Depends(require_api_key)):
-    return orchestrator.snapshot()
+async def v1_status(operator: str | None = None, _key: str = Depends(require_api_key)):
+    return manager.snapshot(operator)
 
 
 # ---- static dashboard -----------------------------------------------------

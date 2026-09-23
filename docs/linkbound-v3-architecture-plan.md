@@ -49,7 +49,7 @@ Run one app process and one active browser context at a time. Browser operations
 
 The contact page derives `invited`, `accepted`, `replied`, and `file_received` from the existing request history plus new sync observations. These facts can coexist. Pending invitation disappearance is not acceptance evidence. Display source and last observed time. Keep LinkedIn unread separate from LinkBound reviewed state.
 
-Use Alembic for versioned migrations but keep runtime `sqlite3` until a concrete query or concurrency need justifies SQLAlchemy Core. Back up the SQLite file before migration, enable foreign keys and a deliberate busy timeout, and reconcile legacy request counts. Do not infer account ownership, acceptance, or replies from ambiguous old rows. No broad ORM rewrite is part of the foundation.
+Release A uses explicit SQLite `user_version` migrations with runtime `sqlite3`. This keeps the one migration in the existing persistence layer; introduce Alembic when the migration set or release process warrants a separate tool. Back up the SQLite file before applying a migration, use a deliberate busy timeout, and reconcile legacy request counts. Foreign key enforcement waits until legacy batch references have been audited and the remaining `batch_id or 0` fallback is removed. Do not infer acceptance or replies from old rows. Legacy contact-only attribution is kept only when a sender is named and no request history names a conflicting sender. No broad ORM rewrite is part of the foundation.
 
 ## Implementation discipline
 

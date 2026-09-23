@@ -55,6 +55,7 @@ async def update_campaign(campaign_id: int, body: CampaignUpdate):
         conn = db._conn()
         cur = conn.execute(f"UPDATE campaigns SET {cols} WHERE id=?", values)
         if cur.rowcount == 0:
+            conn.rollback()
             raise HTTPException(404, "Campaign not found")
         row = conn.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
         conn.commit()
@@ -66,6 +67,7 @@ async def delete_campaign(campaign_id: int):
         conn = db._conn()
         cur = conn.execute("DELETE FROM campaigns WHERE id=?", (campaign_id,))
         if cur.rowcount == 0:
+            conn.rollback()
             raise HTTPException(404, "Campaign not found")
         conn.commit()
     return {"ok": True}
