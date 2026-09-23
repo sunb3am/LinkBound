@@ -17,6 +17,18 @@ action. Hosted sends remain disabled until the account owner reviews the result.
   with the host. `linkbound-phase0-pilot` starts only when an operator requests
   a no-send browser check.
 
+## Current host access
+
+- The private viewer is at
+  `https://linkbound-01.tailfbed29.ts.net:8443/vnc.html`. Its VNC password is
+  stored only in `/var/lib/linkbound/.vnc/passwd`, not in the repository.
+- SSH to the host's Tailscale address `100.103.144.62` using the provisioned
+  key. The public IPv4 address is not an SSH access path.
+- The tailnet policy grants the operator device access to TCP 8443 and 22 on
+  this host. The host firewall denies other incoming connections, allows
+  traffic on `tailscale0`, and allows UDP 41641 for Tailscale transport. The
+  Linode LISH console is the recovery path if tailnet access fails.
+
 ## Verify the infrastructure
 
 Run `systemctl is-active linkbound-display linkbound-window-manager linkbound-novnc`.
@@ -45,3 +57,14 @@ Tailscale Serve, and neither raw VNC nor websockify may answer on the public IP.
 If the VM's new IP or environment triggers a challenge, pause the pilot for
 manual recovery. A successful pilot shows feasibility for this account at this
 time; it is not a guarantee of future account behavior.
+
+## Code updates
+
+Build a Git archive from a reviewed commit and unpack it into a new
+`/opt/linkbound/releases/<commit>` directory. Stop the pilot before switching
+`/opt/linkbound/current` to that release, then restart it. Run
+`systemctl daemon-reload` first if a unit changed. Profile, evidence, VNC
+password, and application data remain under `/var/lib/linkbound`, outside the
+release. To roll back, stop the pilot, point `current` at the prior release,
+and start it again. Check `journalctl -u linkbound-phase0-pilot.service` and the
+latest evidence JSON after either change.
