@@ -7,6 +7,8 @@ state, and file downloads are still being validated. It must not be scheduled.
 from __future__ import annotations
 
 import mimetypes
+import tempfile
+from pathlib import Path
 
 from . import db, inbound_store
 from .inbox_browser import FOLDERS, InboxAuthError, InboxBrowser, InboxRow, InboxStateError
@@ -121,14 +123,16 @@ async def scan_account(settings, coordinator, operator: str, *, max_rows_per_fol
             operator, expected_sections=FOLDERS, mode="full"
         )
         runner = LinkedInRunner(settings, operator)
+        download_dir = tempfile.TemporaryDirectory(prefix="linkbound-inbox-downloads-")
         errors: list[str] = []
         stopped = False
         try:
             errors.extend(await _recover_unread(settings, operator, None, expected_self_url))
             if errors:
                 raise InboxStateError("Previous unread markers need manual review")
-            await runner.start(accept_downloads=True)
+            await runner.start(accept_downloads=True, downloads_path=download_dir.name)
             browser = InboxBrowser(runner._require_page())
+            browser.download_dir = Path(download_dir.name)
             await browser.verify_identity(expected_self_url)
             for folder in FOLDERS:
                 observed = stored = unresolved = 0
@@ -272,6 +276,7 @@ async def scan_account(settings, coordinator, operator: str, *, max_rows_per_fol
             except Exception as exc:
                 stopped = True
                 errors.append(f"Browser close failed: {type(exc).__name__}")
+            download_dir.cleanup()
             try:
                 recovery_errors = await _recover_unread(
                     settings, operator, run_id, expected_self_url

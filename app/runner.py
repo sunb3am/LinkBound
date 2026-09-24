@@ -59,7 +59,8 @@ class LinkedInRunner:
 
     # ---- lifecycle --------------------------------------------------------
 
-    async def start(self, *, accept_downloads: bool | None = None) -> None:
+    async def start(self, *, accept_downloads: bool | None = None,
+                    downloads_path: str | None = None) -> None:
         self._pw = await async_playwright().start()
 
         if self.browser_cfg.cdp_url:
@@ -81,6 +82,8 @@ class LinkedInRunner:
                 launch_kwargs["channel"] = self.browser_cfg.channel
             if accept_downloads is not None:
                 launch_kwargs["accept_downloads"] = accept_downloads
+            if downloads_path is not None:
+                launch_kwargs["downloads_path"] = downloads_path
             self._context = await self._pw.chromium.launch_persistent_context(**launch_kwargs)
 
         self._context.set_default_navigation_timeout(self.browser_cfg.nav_timeout_ms)

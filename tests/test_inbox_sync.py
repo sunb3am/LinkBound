@@ -15,7 +15,7 @@ class FakeRunner:
         self.start_calls = []
         self.instances.append(self)
 
-    async def start(self, *, accept_downloads=None):
+    async def start(self, *, accept_downloads=None, downloads_path=None):
         self.start_calls.append(accept_downloads)
 
     def _require_page(self):

@@ -7,6 +7,7 @@ behavior changes, stop rather than silently consuming an unread marker.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +53,7 @@ def thread_key_from_url(url: str) -> str:
 class InboxBrowser:
     def __init__(self, page: Page):
         self.page = page
+        self.download_dir: Path | None = None
 
     async def _check_state(self) -> None:
         path = urlsplit(self.page.url).path.lower()
@@ -194,9 +196,11 @@ class InboxBrowser:
         }).filter(Boolean)""")
 
     async def download_attachment(self, message_key: str, index: int) -> tuple[str, bytes]:
-        """Click one visible file button and read Playwright's downloaded bytes."""
+        """Click one visible file button and read its isolated completed file."""
         if index < 0:
             raise ValueError("Invalid attachment index")
+        if self.download_dir is None:
+            raise InboxStateError("Attachment download directory is unavailable")
         events = self.page.locator(".msg-s-event-listitem[data-event-urn]")
         matching = [event for event in await events.all()
                     if await event.get_attribute("data-event-urn") == message_key]
@@ -205,13 +209,38 @@ class InboxBrowser:
         buttons = matching[0].locator("button.msg-s-event-listitem__download-attachment-button")
         if index >= await buttons.count():
             raise InboxStateError("Attachment button is missing")
+        before = {item.name for item in self.download_dir.iterdir()}
         async with self.page.expect_download(timeout=20000) as download_info:
             await buttons.nth(index).click()
         download = await download_info.value
-        path = Path(await download.path())
-        if path.stat().st_size > 25 * 1024 * 1024:
-            raise InboxStateError("Attachment exceeds the 25 MiB storage limit")
-        return download.suggested_filename, path.read_bytes()
+        # Chrome 154 on the hosted VM crashes after a persistent-profile restart
+        # when Playwright asks for download.path() or save_as(). A disposable
+        # local-download probe completed three separate launches by reading the
+        # one finished file from Playwright's per-scan downloads directory.
+        return download.suggested_filename, await self._completed_download_bytes(before)
+
+    async def _completed_download_bytes(self, before: set[str]) -> bytes:
+        if self.download_dir is None:
+            raise InboxStateError("Attachment download directory is unavailable")
+        deadline = asyncio.get_running_loop().time() + 20
+        while asyncio.get_running_loop().time() < deadline:
+            created = [item for item in self.download_dir.iterdir()
+                       if item.name not in before]
+            ready = [item for item in created if not item.name.endswith(".crdownload")]
+            if len(ready) > 1:
+                raise InboxStateError("More than one attachment file appeared")
+            if len(ready) == 1 and len(created) == 1:
+                path = ready[0]
+                if path.is_symlink() or not path.is_file():
+                    raise InboxStateError("Attachment path is not a regular file")
+                if path.stat().st_size > 25 * 1024 * 1024:
+                    raise InboxStateError("Attachment exceeds the 25 MiB storage limit")
+                data = path.read_bytes()
+                await asyncio.sleep(0.2)
+                if data and path.exists() and path.read_bytes() == data:
+                    return data
+            await asyncio.sleep(0.1)
+        raise InboxStateError("Attachment download did not complete")
 
     async def _active_row(self, thread_key: str | None, baseline: InboxRow):
         if thread_key is not None and thread_key_from_url(self.page.url) != thread_key:
