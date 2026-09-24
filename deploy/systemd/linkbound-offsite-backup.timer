@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly LinkBound encrypted offsite backup
+
+[Timer]
+OnCalendar=*-*-* 20:30:00 America/Los_Angeles
+Persistent=true
+RandomizedDelaySec=15m
+Unit=linkbound-offsite-backup.service
+
+[Install]
+WantedBy=timers.target

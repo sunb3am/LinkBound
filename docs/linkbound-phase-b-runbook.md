@@ -94,9 +94,10 @@ the empty database, retain a verified pre-import snapshot, and start it only
 after a restore drill on the imported copy. Do not merge `yt` and
 `yash_thakkar` based on their names alone.
 
-The deployment snapshot is on the VM. An encrypted offsite destination and a
-scheduled copy are still required before treating this host as the only copy of
-production CRM data. The no-send gate remains in `/api/start`, `/api/v1/enqueue`,
+The deployment snapshot is on the VM. Follow the
+[offsite backup runbook](linkbound-offsite-backup.md) to provision the private
+bucket, prove an encrypted restore, and enable the backup timer. Until then the
+VM is the only verified location for current CRM data. The no-send gate remains in `/api/start`, `/api/v1/enqueue`,
 and the shared run coordinator. The operator has authorized hosted use for the
 initial Shubham account. A controlled headed regression of challenge, limit,
 and uncertain-send stops remains necessary before enabling hosted sends.

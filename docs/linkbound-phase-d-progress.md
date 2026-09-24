@@ -78,6 +78,11 @@ them.
   `live_sends_enabled=false`. A local snapshot including saved files passed
   verification. An isolated restore copy passed the same manifest verification. No encrypted
   offsite destination is configured yet.
+- The restic offsite job and nightly timer are staged in this branch, but the
+  timer is not installed or enabled. A temporary local restic repository on the
+  Linode proved encrypted backup, `restic check`, full restore, and LinkBound
+  manifest verification. The private Object Storage bucket and limited key are
+  still needed for an actual offsite upload and restore drill.
 
 ## Remaining before closing Phase D
 
@@ -90,8 +95,10 @@ them.
    disappeared invitation as accepted. Verify first-degree acceptance against
    an actual tracked Shubham contact. Older message history and source time
    require visible browser evidence rather than inferred timestamps.
-3. Configure an encrypted offsite backup destination and restore test. The
-   local database and attachment restore is proven; offsite resilience is not.
+3. Configure the private Object Storage destination and limited key, run an
+   actual encrypted upload and restore drill, then enable the nightly timer.
+   The local database and attachment restore is proven; offsite resilience is
+   not.
 4. Run a controlled hosted send against a specified target and exact text to
    verify the outbound stop controls. The user has authorized internal use of
    Shubham's account; no separate account-owner approval gate is needed.
