@@ -67,14 +67,28 @@ class InboxBrowser:
         await self.page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded")
         await self._check_state()
         me = self.page.get_by_role("button", name="Me", exact=True)
+        await me.first.wait_for(state="visible", timeout=8000)
         if await me.count() != 1:
             raise InboxAuthError("LinkedIn account menu is unavailable")
-        await me.click()
-        menu = self.page.get_by_role("menu").filter(has_text=re.compile(r"\bSign out\b", re.I))
-        if await menu.count() != 1:
+
+        async def visible_account_menus():
+            # The account menu can be omitted by role/text selectors even when
+            # its DOM node is visible. Inspect the actual rendered menus.
+            return [menu for menu in await self.page.locator("[role=menu]").all()
+                    if await menu.is_visible() and
+                    re.search(r"\bSign out\b", await menu.inner_text(), re.I)]
+
+        menus = await visible_account_menus()
+        if not menus:
+            await me.click()
+            await self.page.get_by_text("Sign out", exact=False).first.wait_for(
+                state="visible", timeout=8000
+            )
+            menus = await visible_account_menus()
+        if len(menus) != 1:
             raise InboxAuthError("LinkedIn account menu could not be verified")
         urls = set()
-        for href in await menu.locator("a[href*='/in/']").evaluate_all(
+        for href in await menus[0].locator("a[href*='/in/']").evaluate_all(
             "links => links.filter(link => link.getClientRects().length > 0).map(link => link.href)"
         ):
             path = urlsplit(href).path.rstrip("/")
