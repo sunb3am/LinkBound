@@ -13,14 +13,16 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 
 
-PAYLOAD = b"linkbound-probe-download\n"
+PDF = os.environ.get("LINKBOUND_PROBE_PDF") == "1"
+PAYLOAD = (b"%PDF-1.4\n" + b"0" * 52240) if PDF else b"linkbound-probe-download\n"
+FILENAME = "probe.pdf" if PDF else "probe.txt"
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
-        self.send_header("Content-Disposition", 'attachment; filename="probe.txt"')
+        self.send_header("Content-Type", "application/pdf" if PDF else "text/plain")
+        self.send_header("Content-Disposition", f'attachment; filename="{FILENAME}"')
         self.send_header("Content-Length", str(len(PAYLOAD)))
         self.end_headers()
         self.wfile.write(PAYLOAD)
@@ -49,7 +51,7 @@ async def main() -> None:
                 try:
                     page = context.pages[0] if context.pages else await context.new_page()
                     await page.set_content(
-                        f'<a href="http://127.0.0.1:{server.server_port}/probe.txt">Download</a>'
+                        f'<a href="http://127.0.0.1:{server.server_port}/{FILENAME}">Download</a>'
                     )
                     async with page.expect_download(timeout=20000) as event:
                         await page.get_by_text("Download").click()

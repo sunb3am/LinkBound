@@ -213,7 +213,10 @@ async def scan_account(settings, coordinator, operator: str, *, max_rows_per_fol
                             fatal = exc
                             if not persisted:
                                 unresolved += 1
-                            folder_errors.append(f"Thread {row_snapshot.index}: {type(exc).__name__}")
+                            detail = f": {exc}" if isinstance(exc, InboxStateError) else ""
+                            folder_errors.append(
+                                f"Thread {row_snapshot.index}: {type(exc).__name__}{detail}"
+                            )
                         finally:
                             if attempted_open:
                                 try:

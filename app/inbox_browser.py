@@ -240,7 +240,12 @@ class InboxBrowser:
                 if data and path.exists() and path.read_bytes() == data:
                     return data
             await asyncio.sleep(0.1)
-        raise InboxStateError("Attachment download did not complete")
+        created = [item for item in self.download_dir.iterdir()
+                   if item.name not in before]
+        partial = sum(item.name.endswith(".crdownload") for item in created)
+        raise InboxStateError(
+            f"Attachment download did not complete (new files: {len(created)}, partial: {partial})"
+        )
 
     async def _active_row(self, thread_key: str | None, baseline: InboxRow):
         if thread_key is not None and thread_key_from_url(self.page.url) != thread_key:
