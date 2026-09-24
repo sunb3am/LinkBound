@@ -25,14 +25,20 @@ account mapping, and queue stop controls are completed.
   checking a login name. Tailscale Serve on ports 443 and 8443 stays private;
   Funnel must remain off. Local trusted host processes can reach the loopback
   port, so host access remains restricted.
-- Grant direct tailnet members and tagged tailnet devices access to this Linode
-  on TCP 443 and TCP 8443. Do not widen TCP 22 SSH access. A grant using
-  `autogroup:member` and `autogroup:tagged` excludes shared users and subnet
-  routes. Check `tailscale serve status` after a policy change and test from a
-  second member device.
+- Tailnet membership is the access decision for the app and viewer. If every
+  device in this tailnet is intentionally trusted to reach every other device,
+  Tailscale's [default allow-all policy](https://tailscale.com/docs/reference/examples/acls)
+  is simpler and allows the app and viewer
+  without a LinkBound-specific grant. This also makes SSH and any other
+  listening service on every tailnet device reachable, subject to each
+  service's own authentication. It does not publish the app to the internet.
+  Check `tailscale serve status` after a policy change and test from a second
+  member device.
 
-Add this grant to the existing tailnet policy's `grants` array. Keep the current
-SSH grant separate:
+If the tailnet keeps its custom restrictive policy, add this grant to its
+`grants` array. It lets every direct member and tagged device reach LinkBound
+without changing the rules for other tailnet devices. Keep any SSH rules
+separate:
 
 ```json
 {
@@ -41,6 +47,12 @@ SSH grant separate:
   "ip": ["tcp:443", "tcp:8443"]
 }
 ```
+
+An optional exit node for the Linode needs `autogroup:internet` in a
+  restrictive custom policy. The [default allow-all policy](https://tailscale.com/docs/features/exit-nodes)
+  permits approved exit
+nodes without that extra grant. Granting access to an exit device's IP is not
+the same as permitting internet routing through it.
 
 Before the first hosted send and after browser upgrades, record the real OS,
 timezone, locale, Chrome and Playwright versions, display, public egress IP,
