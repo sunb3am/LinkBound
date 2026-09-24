@@ -297,10 +297,11 @@ async def scan_account(
                     for contact in selected_contacts:
                         try:
                             profile = await runner.resolve_profile(contact["linkedin_url"])
-                            if not profile["ok"] or db.normalize_url(
-                                runner._require_page().url
-                            ) != contact["linkedin_url"]:
-                                raise InboxStateError("Tracked profile identity could not be verified")
+                            if not profile["ok"]:
+                                reason = profile.get("error") or "profile heading was not rendered"
+                                raise InboxStateError(f"Tracked profile could not be verified: {reason}")
+                            if db.normalize_url(runner._require_page().url) != contact["linkedin_url"]:
+                                raise InboxStateError("Tracked profile redirected to a different URL")
                             if profile["degree"] == "1st":
                                 inbound_store.record_connection_observation(
                                     operator, contact["linkedin_url"],
@@ -309,7 +310,8 @@ async def scan_account(
                             checked += 1
                         except Exception as exc:
                             stopped = True
-                            connection_error = f"Tracked profile check stopped ({type(exc).__name__})"
+                            detail = f": {exc}" if isinstance(exc, InboxStateError) else ""
+                            connection_error = f"Tracked profile check stopped ({type(exc).__name__}){detail}"
                             errors.append(connection_error)
                             break
                 inbound_store.set_section_coverage(

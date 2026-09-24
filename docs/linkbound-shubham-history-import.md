@@ -32,6 +32,8 @@ profile. The source database is read-only throughout.
    message/file counts, and the app's account-scoped CRM view. One legacy
    `running` batch becomes `interrupted`; it must never resume automatically.
    Template IDs are cleared because the old template table is not imported.
+   When run as root, the importer assigns screenshot ownership to the account
+   that owns the hosted database, keeping files private to the app service.
 5. Start the app. Confirm health, the Shubham contact list, and an imported
    screenshot. Then run a bounded no-send scan with the existing Chrome profile
    to test one tracked contact's first-degree check. Stop if a challenge or

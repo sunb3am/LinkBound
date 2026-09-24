@@ -257,6 +257,10 @@ def import_bundle(bundle_path: Path, target_db: Path, screenshots_dir: Path,
                 return summary
             shots_root = screenshots_dir.resolve()
             shots_root.mkdir(parents=True, exist_ok=True)
+            owner = target_db.stat()
+            if os.name == "posix" and os.geteuid() == 0:
+                os.chown(shots_root, owner.st_uid, owner.st_gid)
+                shots_root.chmod(0o700)
             created: list[Path] = []
             try:
                 target.execute("BEGIN IMMEDIATE")
@@ -276,10 +280,15 @@ def import_bundle(bundle_path: Path, target_db: Path, screenshots_dir: Path,
                     if not destination.resolve().is_relative_to(shots_root) or destination.exists():
                         raise ValueError("Screenshot destination is unsafe or already exists")
                     destination.parent.mkdir(parents=True, exist_ok=True)
+                    if os.name == "posix" and os.geteuid() == 0:
+                        os.chown(destination.parent, owner.st_uid, owner.st_gid)
+                        destination.parent.chmod(0o700)
                     with scratch.joinpath(*PurePosixPath(member).parts).open("rb") as source_file, destination.open("xb") as output_file:
                         created.append(destination)
                         shutil.copyfileobj(source_file, output_file)
                     destination.chmod(0o600)
+                    if os.name == "posix" and os.geteuid() == 0:
+                        os.chown(destination, owner.st_uid, owner.st_gid)
                 if target.execute("PRAGMA foreign_key_check").fetchone():
                     raise ValueError("Imported history violates a foreign key")
                 target.commit()

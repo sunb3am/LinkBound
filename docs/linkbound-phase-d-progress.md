@@ -1,9 +1,10 @@
 # Phase D progress: deployed inbound browser collector
 
 Status on 2026-09-23 Pacific: `codex/linkbound-phase-d` is pushed and deployed
-on the private Linode at code commit `048179e`. Shubham's `me` profile is the
-only bound LinkedIn account. Hosted live sending remains disabled. The daily
-no-send inbound schedule is enabled for 18:00 America/Los_Angeles.
+on the private Linode. Shubham's `me` profile is the only bound LinkedIn
+account. Hosted live sending remains disabled. The daily no-send inbound
+schedule was paused after the first live tracked-contact check stopped on an
+unverified profile view. The app and CRM remain available.
 The app is available at `https://linkbound-01.tailfbed29.ts.net/`; the headed
 browser viewer is at `https://linkbound-01.tailfbed29.ts.net:8443/`. Both use
 Tailscale Serve. The tailnet policy still needs the broader 443/8443 grant in
@@ -38,8 +39,10 @@ them.
   500 list rows and open up to 20 changed conversations per folder.
 - Previously invited account contacts are checked in a rotation of at most 5
   profiles per run. Only a verified first-degree profile records acceptance.
-  Shubham currently has no tracked invited contacts in the hosted database, so
-  this path has unit proof but no live account proof.
+  Shubham's historical invited contacts have now been imported. The first live
+  tracked-profile check stopped without recording acceptance because its
+  identity could not be verified. The daily schedule is paused pending a
+  specific diagnosis.
 
 ## Hosted evidence
 
@@ -86,13 +89,33 @@ them.
 - The current release's root-owned files were normalized to remove group write
   access, and the deployment script now enforces that permission on new
   releases. The app health check remained successful after the change.
+- A one-time scoped import moved only Shubham's workstation history into the
+  existing hosted database: 5 batches, 323 requests, 150 confirmed sent
+  requests, 229 tracked account contacts, and 158 screenshots. One stale
+  `running` batch was marked `interrupted`. SQLite integrity and foreign keys
+  passed; all screenshot hashes matched the source bundle. The 16 existing
+  conversations, 16 messages, and 1 saved attachment remained intact at the
+  import boundary. A pre-import snapshot was verified, and a post-import
+  snapshot restored to a separate directory with all 160 manifest files
+  matching. The app served 229 CRM contacts, 5 batches, and an imported
+  screenshot through its private routes after restart.
+- The first bounded post-import no-send pilot was run 8. It inspected at most
+  5 list rows and opened at most 1 changed conversation per folder. It stopped
+  on the first tracked profile check with `InboxStateError`; no first-degree
+  acceptance was recorded. The old error text did not preserve whether the
+  profile was missing, redirected, or lacked a rendered heading. The code now
+  records that distinction for future checks. Run 8 left no pending unread
+  open intents and marked its 3 opened conversations `not_needed` for unread
+  restoration. The hosted app was restarted with the daily schedule disabled,
+  still reporting `busy=false` and `live_sends_enabled=false`.
 
 ## Remaining before closing Phase D
 
-1. Observe the first automatic daily run and confirm the same bounded
-   coverage, unread restoration, and no duplicate messages or files. Keep
-   incomplete coverage prominent in the UI. Add deliberate backfill in small
-   manual batches before claiming complete history.
+1. Diagnose the first tracked-profile stop in a controlled headed view before
+   resuming the daily schedule. Then observe the first automatic daily run and
+   confirm bounded coverage, unread restoration, and no duplicate messages or
+   files. Keep incomplete coverage prominent in the UI. Add deliberate
+   backfill in small manual batches before claiming complete history.
 2. Observe a real Message Requests control if one appears, then add a tested
    browser collector. Build Sent Invitations observation without treating a
    disappeared invitation as accepted. Verify first-degree acceptance against

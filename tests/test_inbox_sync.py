@@ -203,6 +203,12 @@ class ConnectionRunner(FakeRunner):
         return {"ok": True, "degree": "1st"}
 
 
+class MissingConnectionRunner(ConnectionRunner):
+    async def resolve_profile(self, url):
+        self.profile_url = url
+        return {"ok": False, "degree": "", "error": "profile 404"}
+
+
 class UnverifiableUnreadBrowser(FakeInboxBrowser):
     opened = []
 
@@ -521,5 +527,27 @@ def test_tracked_acceptance_requires_visible_first_degree(tmp_path, monkeypatch)
         assert [tuple(row) for row in observed] == [
             ("https://linkedin.com/in/invited", "connected", "profile_first_degree")
         ]
+    finally:
+        db.close_db()
+
+
+def test_unverifiable_tracked_profile_stops_with_specific_reason(tmp_path, monkeypatch):
+    db.close_db()
+    db.init_db(tmp_path / "inbound.sqlite")
+    db.create_operator("sender", "Sender", "profiles/sender")
+    db.set_operator_self_profile_url("sender", "https://linkedin.com/in/me")
+    monkeypatch.setattr(inbox_sync, "LinkedInRunner", MissingConnectionRunner)
+    monkeypatch.setattr(inbox_sync, "InboxBrowser", AllFoldersBrowser)
+    monkeypatch.setattr(db, "list_account_contacts", lambda *_args, **_kwargs: [{
+        "linkedin_url": "https://linkedin.com/in/invited", "invited_at": "2026-09-23T00:00:00+00:00",
+        "connected_at": None,
+    }])
+    settings = SimpleNamespace(operators={"sender": SimpleNamespace(label="Me")}, data_dir=tmp_path)
+
+    try:
+        result = asyncio.run(inbox_sync.scan_account(settings, DirectCoordinator(), "sender"))
+        assert result["stopped"] is True
+        assert "profile 404" in result["coverage"]["tracked_connections"]["error"]
+        assert db._conn().execute("SELECT COUNT(*) FROM relationship_observations").fetchone()[0] == 0
     finally:
         db.close_db()

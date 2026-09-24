@@ -49,10 +49,51 @@ account restrictions.
 | Browser launch | `app/runner.py` uses a Playwright persistent Chrome context and passes a nondefault `AutomationControlled` launch flag. The pilot uses the same runner. | The flag's presence does not establish that LinkedIn trusts this browser. Do not add stealth plugins or further overrides based on unverified claims. Review any browser-flag change in a separate no-send regression test; the owner reports that the local send path has worked reliably. |
 | Session | `/var/lib/linkbound/profiles/me` is private to the non-root service user. The Phase 0 run reopened it and the owner confirmed a signed-in feed. | This proves session persistence for that test, not that LinkedIn has approved the environment. Keep one profile per account, one Chrome owner at a time, and protect profile backups as credentials. |
 | Outbound behavior | `config.yaml` allows `daily_cap: 100`, a fixed 30-second gap, and work outside business-hour gating. The hosted environment overrides that with pilot ceilings of 5 actions per day and 20 per week; live sends are disabled. | These are internal limits with no published safe basis. Test the challenge, limit, and uncertain-send stops in a controlled hosted regression before enabling sends. Review each initial send result. Preserve the existing send selectors until a failing case is captured. |
-| Inbound behavior | A bounded headed pilot proved unread marker restoration. The Chrome native attachment download crashed after restart; a browser-response capture now works in the hosted Shubham profile. Runs 4 and 5 saved one file and restored three unread markers. Run 6 showed a large inbox backlog. Run 7 verified the 20-row limit per folder and restored one unread marker. No read-receipt reversal was established. | Keep pre-open unread intents, bounded coverage, and fail-closed recovery. The daily no-send job is enabled for Shubham with a 20-row inspection cap per folder; confirm its first automatic run. Stop on challenges and restricted-action notices. |
+| Inbound behavior | A bounded headed pilot proved unread marker restoration. The Chrome native attachment download crashed after restart; a browser-response capture now works in the hosted Shubham profile. Runs 4 and 5 saved one file and restored three unread markers. Run 6 showed a large inbox backlog. Run 7 verified the 20-row limit per folder and restored one unread marker. Run 8 stopped on the first imported tracked-contact identity check; no connection was inferred. No read-receipt reversal was established. | Keep pre-open unread intents, bounded coverage, and fail-closed recovery. The daily no-send job is paused until the tracked-profile stop is diagnosed. Stop on challenges and restricted-action notices. |
 | Host security | noVNC and VNC bind to loopback and are reached through Tailscale. Chrome sandboxing passed a disposable headed test and is enabled for the hosted service. | Private ingress and browser sandboxing protect the host; neither establishes LinkedIn account-policy standing. Keep the browser under the non-root service account. |
 
 ## Risk controls and remaining checks
+
+### Optional Tailscale exit node for hosted egress
+
+On 2026-09-23, the Linode's Tailscale status showed no approved exit node and
+the Linode was using its own internet route. Tailscale can route the Linode's
+non-tailnet internet traffic through an approved laptop or phone, so LinkedIn
+would see that exit device's upstream public IP. This addresses the cloud IP
+part of the environment only. Chrome remains a Linux browser running on the
+Linode, with the same profile and other browser signals. A phone used for
+LinkedIn does not make the server browser appear to be that phone.
+
+A plugged-in laptop on a stable home network is the first candidate for a
+controlled trial. Tailscale documents iOS and Android phones as eligible exit
+nodes too, but specifically warns that Android exit nodes are still being
+optimized and may be too slow for most uses. A phone on the same Wi-Fi as the
+laptop generally has the same home public IP; cellular egress can change as the
+phone moves or the carrier changes its address. A selected exit node routes
+the Linode's other internet traffic as well, including package downloads and
+offsite backups, while tailnet traffic remains on the tailnet. Loss or key
+expiry of an exit node can make internet routes unreachable, so the scheduler
+must stay paused if the exit path is unhealthy rather than silently switching
+egress during a LinkedIn run.
+
+The trial gate is: approve and select one exit node; verify the new public
+egress IP and DNS with a benign site; verify tailnet SSH, app, viewer, backup,
+and restart behavior; then inspect the existing signed-in LinkedIn browser
+headfully for any verification challenge. Record the change. Do not resume
+scheduled scans or sends until the current tracked-profile stop is diagnosed
+and a bounded no-send scan passes. LinkedIn itself recommends avoiding VPNs or
+proxies to reduce sign-in challenges; there is no published assurance that a
+Tailscale exit node lowers account risk.
+
+An exit node needs separate approval in the Tailscale admin console. A
+restrictive custom policy must grant the Linode `autogroup:internet`; a grant
+to the exit device's tailnet IP alone does not authorize internet routing.
+Tailscale's default allow-all policy permits approved exit node use.
+
+Sources: [Tailscale exit nodes](https://tailscale.com/docs/features/exit-nodes),
+[iOS setup](https://tailscale.com/docs/features/exit-nodes?tab=ios),
+[router implementation](https://tailscale.com/docs/reference/kernel-vs-userspace-routers),
+[LinkedIn security verification](https://www.linkedin.com/help/linkedin/answer/a1339220).
 
 1. **Project decision:** On 2026-09-23, the operator authorized internal hosted
    use for the initial Shubham account and declined a separate account-owner
