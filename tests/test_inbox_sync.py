@@ -69,6 +69,9 @@ class FakeInboxBrowser:
     async def rows(self):
         return self.rows_by_folder.get(self.folder, [])
 
+    async def all_rows(self):
+        return await self.rows(), True
+
     async def validate_row(self, row):
         return None
 
@@ -152,6 +155,9 @@ class FailingThenRecoveringBrowser:
     async def rows(self):
         return [InboxRow(0, "Unread Person", "Unread preview", True, False)]
 
+    async def all_rows(self):
+        return await self.rows(), True
+
     async def validate_row(self, row):
         return None
 
@@ -184,6 +190,15 @@ class FailingThenRecoveringBrowser:
 class TrackingRunner(FakeRunner):
     async def close(self):
         self.closed = True
+
+
+class ConnectionRunner(FakeRunner):
+    def _require_page(self):
+        return SimpleNamespace(url=getattr(self, "profile_url", ""))
+
+    async def resolve_profile(self, url):
+        self.profile_url = url
+        return {"ok": True, "degree": "1st"}
 
 
 class UnverifiableUnreadBrowser(FakeInboxBrowser):
@@ -224,6 +239,9 @@ class CrashBeforeKeyBrowser:
 
     async def rows(self):
         return [InboxRow(0, "Unread Person", "Unread preview", self.number == 0, False)]
+
+    async def all_rows(self):
+        return await self.rows(), True
 
     async def validate_row(self, row):
         return None
@@ -322,20 +340,20 @@ def test_inbox_sync_persists_messages_restores_unread_by_thread_and_reports_part
             "JOIN conversations c ON c.id=o.conversation_id "
             "ORDER BY r.id, c.thread_key"
         ).fetchall()
-        assert len(observations) == 4
+        assert len(observations) == 2
         per_run = {}
         for observation in observations:
             per_run.setdefault(observation["id"], {})[observation["thread_key"]] = (
                 observation["linkedin_unread_before_open"],
                 observation["restore_status"], observation["restored_at"],
             )
-        assert len(per_run) == 2
+        assert len(per_run) == 1
         for values in per_run.values():
             assert values["/messaging/thread/unread"][0:2] == (1, "restored")
             assert values["/messaging/thread/unread"][2]
             assert values["/messaging/thread/read"][0:2] == (0, "not_needed")
             assert values["/messaging/thread/read"][2] is None
-        assert len(FakeInboxBrowser.restore_calls) == 2
+        assert len(FakeInboxBrowser.restore_calls) == 1
         assert {key for key, _ in FakeInboxBrowser.restore_calls} == {"/messaging/thread/unread"}
         assert len(FakeRunner.instances) == 2
         assert all(runner.send_calls == 0 for runner in FakeRunner.instances)
@@ -464,7 +482,36 @@ def test_bounded_scan_reports_partial_coverage_without_a_hard_stop(tmp_path, mon
         result = asyncio.run(inbox_sync.scan_account(settings, DirectCoordinator(), "sender"))
         assert result["status"] == "partial"
         assert result["stopped"] is False
-        assert set(result["coverage"]) == set(FOLDERS)
-        assert all(section["status"] == "incomplete" for section in result["coverage"].values())
+        assert set(result["coverage"]) == set(FOLDERS) | {"tracked_connections"}
+        assert all(result["coverage"][section]["status"] == "incomplete" for section in FOLDERS)
+        assert result["coverage"]["tracked_connections"]["status"] == "complete"
+    finally:
+        db.close_db()
+
+
+def test_tracked_acceptance_requires_visible_first_degree(tmp_path, monkeypatch):
+    db.close_db()
+    db.init_db(tmp_path / "inbound.sqlite")
+    db.create_operator("sender", "Sender", "profiles/sender")
+    db.set_operator_self_profile_url("sender", "https://linkedin.com/in/me")
+    monkeypatch.setattr(inbox_sync, "LinkedInRunner", ConnectionRunner)
+    monkeypatch.setattr(inbox_sync, "InboxBrowser", AllFoldersBrowser)
+    monkeypatch.setattr(db, "list_account_contacts", lambda *_args, **_kwargs: [{
+        "linkedin_url": "https://linkedin.com/in/invited", "invited_at": "2026-09-23T00:00:00+00:00",
+        "connected_at": None,
+    }])
+    settings = SimpleNamespace(operators={"sender": SimpleNamespace(label="Me")}, data_dir=tmp_path)
+
+    try:
+        result = asyncio.run(inbox_sync.scan_account(settings, DirectCoordinator(), "sender"))
+        assert result["stopped"] is False
+        assert result["coverage"]["tracked_connections"]["status"] == "complete"
+        assert result["coverage"]["tracked_connections"]["stored"] == 1
+        observed = db._conn().execute(
+            "SELECT contact_url, fact, source FROM relationship_observations"
+        ).fetchall()
+        assert [tuple(row) for row in observed] == [
+            ("https://linkedin.com/in/invited", "connected", "profile_first_degree")
+        ]
     finally:
         db.close_db()

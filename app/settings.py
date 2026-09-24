@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -98,6 +100,15 @@ class APIConfig:
 
 
 @dataclass
+class InboundScheduleConfig:
+    enabled: bool = False
+    operator: str = "me"
+    time_local: str = "18:00"
+    timezone: str = "America/Los_Angeles"
+    max_rows_per_folder: int = 2
+
+
+@dataclass
 class Settings:
     server: ServerConfig
     operators: dict[str, OperatorConfig]
@@ -112,6 +123,7 @@ class Settings:
     tailscale_allowed_users: list[str]
     allow_tailnet_devices: bool
     allow_live_sends: bool
+    inbound_schedule: InboundScheduleConfig = field(default_factory=InboundScheduleConfig)
     root: Path = ROOT
     data_dir: Path = DATA_DIR
     profile_root: Path = ROOT
@@ -232,6 +244,29 @@ def load_settings() -> Settings:
         raise ValueError("LINKBOUND_ALLOW_LIVE_SENDS must be true or false")
     allow_live_sends = send_value == "true"
 
+    sync_value = os.environ.get("LINKBOUND_INBOUND_SYNC_ENABLED", "false").strip().casefold()
+    if sync_value not in {"true", "false"}:
+        raise ValueError("LINKBOUND_INBOUND_SYNC_ENABLED must be true or false")
+    sync_time = os.environ.get("LINKBOUND_INBOUND_SYNC_TIME", "18:00").strip()
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", sync_time):
+        raise ValueError("LINKBOUND_INBOUND_SYNC_TIME must be HH:MM in 24-hour local time")
+    sync_timezone = os.environ.get("LINKBOUND_INBOUND_SYNC_TIMEZONE", "America/Los_Angeles").strip()
+    try:
+        ZoneInfo(sync_timezone)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError("LINKBOUND_INBOUND_SYNC_TIMEZONE must be an IANA timezone") from exc
+    sync_rows = int(os.environ.get("LINKBOUND_INBOUND_SYNC_ROWS_PER_FOLDER", "2"))
+    if not 1 <= sync_rows <= 20:
+        raise ValueError("LINKBOUND_INBOUND_SYNC_ROWS_PER_FOLDER must be 1-20")
+    inbound_schedule = InboundScheduleConfig(
+        enabled=sync_value == "true",
+        operator=os.environ.get("LINKBOUND_INBOUND_SYNC_OPERATOR", "me").strip(),
+        time_local=sync_time, timezone=sync_timezone,
+        max_rows_per_folder=sync_rows,
+    )
+    if inbound_schedule.enabled and not inbound_schedule.operator:
+        raise ValueError("LINKBOUND_INBOUND_SYNC_OPERATOR is required when sync is enabled")
+
     return Settings(
         server=server,
         operators=operators,
@@ -246,6 +281,7 @@ def load_settings() -> Settings:
         tailscale_allowed_users=tailscale_allowed_users,
         allow_tailnet_devices=allow_tailnet_devices,
         allow_live_sends=allow_live_sends,
+        inbound_schedule=inbound_schedule,
         data_dir=data_dir,
         profile_root=profile_root,
     )

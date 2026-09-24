@@ -28,6 +28,7 @@ from starlette.middleware import Middleware
 from . import csv_ingest, db, voice as voicelib, campaigns, crm, analytics, export, inbound, inbound_store
 from .queue_schedule import distribute_due_times
 from .queue_worker import queue_loop
+from .inbound_schedule import inbound_loop
 from .linkedin_urls import canonical_profile_url
 from .access import TailscaleAuthMiddleware
 from .ai import GeminiClient
@@ -68,13 +69,16 @@ settings.operators = {
 async def app_lifespan(_app):
     db.mark_inflight_targets_uncertain()
     inbound_store.mark_interrupted_runs()
-    task = asyncio.create_task(queue_loop(manager, settings))
+    tasks = [asyncio.create_task(queue_loop(manager, settings)),
+             asyncio.create_task(inbound_loop(manager, settings))]
     try:
         yield
     finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(
@@ -169,6 +173,13 @@ async def get_config():
         "actions": [a.value for a in ActionType],
         "default_action": settings.behavior.default_action,
         "live_sends_enabled": settings.allow_live_sends,
+        "inbound_schedule": {
+            "enabled": settings.inbound_schedule.enabled,
+            "operator": settings.inbound_schedule.operator,
+            "time_local": settings.inbound_schedule.time_local,
+            "timezone": settings.inbound_schedule.timezone,
+            "max_rows_per_folder": settings.inbound_schedule.max_rows_per_folder,
+        },
         "behavior": {
             "inmail_enabled": settings.behavior.inmail_enabled,
             "message_if_connected": settings.behavior.message_if_connected,

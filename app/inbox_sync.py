@@ -13,6 +13,8 @@ from .runner import LinkedInRunner
 
 
 MAX_ROWS_PER_FOLDER = 8
+MAX_CONNECTION_PROFILES = 5
+EXPECTED_SECTIONS = (*FOLDERS, "requests", "sent_invitations", "tracked_connections")
 
 
 async def _recover_unread(
@@ -117,7 +119,7 @@ async def scan_account(settings, coordinator, operator: str, *, max_rows_per_fol
 
     async def operation() -> dict:
         run_id = inbound_store.start_sync_run(
-            operator, expected_sections=FOLDERS, mode="full"
+            operator, expected_sections=EXPECTED_SECTIONS, mode="inventory"
         )
         runner = LinkedInRunner(settings, operator)
         errors: list[str] = []
@@ -134,12 +136,20 @@ async def scan_account(settings, coordinator, operator: str, *, max_rows_per_fol
                 folder_errors: list[str] = []
                 try:
                     await browser.open_list(folder)
-                    baseline = await browser.rows()
+                    baseline, list_exhausted = await browser.all_rows()
                     observed = len(baseline)
-                    for row_snapshot in baseline[:max_rows_per_folder]:
-                        if row_snapshot.occluded:
-                            unresolved += 1
-                            continue
+                    previous = {
+                        (item["section"], item["participant_name"], item["preview_text"])
+                        for item in inbound_store.list_conversations(operator, 500)
+                    }
+                    candidates = [row for row in baseline if not row.occluded and
+                                  (folder, row.participant_name, row.preview_text) not in previous]
+                    candidates.sort(key=lambda row: (not row.unread, row.index))
+                    selected = candidates[:max_rows_per_folder]
+                    unresolved = (sum(row.occluded for row in baseline) +
+                                  max(0, len(candidates) - len(selected)) +
+                                  (0 if list_exhausted else 1))
+                    for row_snapshot in selected:
                         thread_key = None
                         intent_id = None
                         attempted_open = False
@@ -245,7 +255,6 @@ async def scan_account(settings, coordinator, operator: str, *, max_rows_per_fol
                                     )
                         if fatal is not None:
                             raise fatal
-                    unresolved += max(0, observed - min(observed, max_rows_per_folder))
                 except Exception as exc:
                     stopped = True
                     folder_errors.append(f"Folder unavailable: {type(exc).__name__}")
@@ -258,13 +267,55 @@ async def scan_account(settings, coordinator, operator: str, *, max_rows_per_fol
                     break
                 # The pilot does not assert that LinkedIn rendered all older
                 # conversations or complete message history in a folder.
-                folder_errors.append("Pilot is limited to rendered rows and recent visible messages")
+                folder_errors.append(
+                    "Collector reads changed visible conversations and recent rendered messages only"
+                )
+                if not list_exhausted:
+                    folder_errors.append("LinkedIn list exceeded the 500-row inspection cap")
                 inbound_store.set_section_coverage(
                     run_id, folder, observed=observed, stored=stored,
                     unresolved=unresolved, complete=False,
                     error="; ".join(folder_errors),
                 )
                 errors.extend(f"{folder}: {item}" for item in folder_errors)
+            if not stopped:
+                account_contacts = db.list_account_contacts(operator, limit=501)
+                contacts_truncated = len(account_contacts) > 500
+                pending = [item for item in account_contacts[:500]
+                           if item.get("invited_at") and not item.get("connected_at")]
+                pending.sort(key=lambda item: item["linkedin_url"])
+                checked = 0
+                connection_error = ""
+                if pending:
+                    start = ((run_id - 1) * MAX_CONNECTION_PROFILES) % len(pending)
+                    selected_contacts = (pending[start:] + pending[:start])[:MAX_CONNECTION_PROFILES]
+                    for contact in selected_contacts:
+                        try:
+                            profile = await runner.resolve_profile(contact["linkedin_url"])
+                            if not profile["ok"] or db.normalize_url(
+                                runner._require_page().url
+                            ) != contact["linkedin_url"]:
+                                raise InboxStateError("Tracked profile identity could not be verified")
+                            if profile["degree"] == "1st":
+                                inbound_store.record_connection_observation(
+                                    operator, contact["linkedin_url"],
+                                    source="profile_first_degree",
+                                )
+                            checked += 1
+                        except Exception as exc:
+                            stopped = True
+                            connection_error = f"Tracked profile check stopped ({type(exc).__name__})"
+                            errors.append(connection_error)
+                            break
+                inbound_store.set_section_coverage(
+                    run_id, "tracked_connections", observed=len(pending), stored=checked,
+                    unresolved=len(pending) - checked + int(contacts_truncated),
+                    complete=not stopped and not contacts_truncated and checked == len(pending),
+                    error=connection_error or (
+                        "Account contact list exceeds 500 records" if contacts_truncated else
+                        "Pending tracked invitations remain to check" if len(pending) > checked else ""
+                    ),
+                )
         except Exception as exc:
             stopped = True
             errors.append(f"Collector stopped: {type(exc).__name__}: {exc}")

@@ -1202,6 +1202,11 @@ function inboxCoverageHtml(coverage) {
 function renderInboxSync(runs) {
   const summary = $("#inboxSyncHealth").querySelector(".inbox-sync-summary");
   const coverage = $("#inboxSyncCoverage");
+  const schedule = state.config?.inbound_schedule;
+  const operator = $("#operator").value;
+  $("#inboxSyncNote").textContent = schedule?.enabled && schedule.operator === operator
+    ? `A no-send browser scan runs daily at ${schedule.time_local} (${schedule.timezone}). It inspects changed visible conversations in bounded batches. Coverage remains partial until the backfill is complete.`
+    : "Daily browser scanning is off for this session. Saved observations remain available here.";
   if (!runs.length) {
     summary.innerHTML = `<strong>No inbox sync recorded yet.</strong><span>Run history will appear here after the first scan.</span>`;
     coverage.innerHTML = "";

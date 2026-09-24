@@ -154,7 +154,39 @@ class InboxBrowser:
         }))""")
         return [InboxRow(**item) for item in raw]
 
+    async def _load_rows(self, *, minimum: int | None = None,
+                         limit: int = 500) -> tuple[int, bool]:
+        """Scroll the visible list until a row exists or older rows stop loading."""
+        scroller = self.page.locator("ul.msg-conversations-container__conversations-list")
+        if await scroller.count() != 1:
+            raise InboxStateError("Inbox conversation list is unavailable")
+        stable = 0
+        count = await self.page.locator(ROW).count()
+        for _ in range(60):
+            if minimum is not None and count >= minimum:
+                return count, True
+            if count >= limit:
+                return count, False
+            await scroller.evaluate("element => element.scrollTop = element.scrollHeight")
+            await self.page.wait_for_timeout(800)
+            next_count = await self.page.locator(ROW).count()
+            stable = stable + 1 if next_count == count else 0
+            count = next_count
+            if stable >= 2:
+                return count, True
+        return count, False
+
+    async def all_rows(self, limit: int = 500) -> tuple[list[InboxRow], bool]:
+        count, exhausted = await self._load_rows(limit=limit)
+        rows = await self.rows()
+        if len(rows) != count:
+            raise InboxStateError("Inbox list changed while scrolling")
+        return rows[:limit], exhausted
+
     async def validate_row(self, baseline: InboxRow) -> None:
+        count, _ = await self._load_rows(minimum=baseline.index + 1)
+        if count <= baseline.index:
+            raise InboxStateError("Inbox row could not be reloaded")
         row = self.page.locator(ROW).nth(baseline.index)
         await row.scroll_into_view_if_needed()
         rows = await self.rows()
