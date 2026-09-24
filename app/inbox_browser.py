@@ -8,9 +8,10 @@ behavior changes, stop rather than silently consuming an unread marker.
 from __future__ import annotations
 
 import asyncio
+import base64
+from email.message import Message
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from urllib.parse import urlsplit
 
 from playwright.async_api import Page
@@ -53,7 +54,6 @@ def thread_key_from_url(url: str) -> str:
 class InboxBrowser:
     def __init__(self, page: Page):
         self.page = page
-        self.download_dir: Path | None = None
 
     async def _check_state(self) -> None:
         path = urlsplit(self.page.url).path.lower()
@@ -196,11 +196,14 @@ class InboxBrowser:
         }).filter(Boolean)""")
 
     async def download_attachment(self, message_key: str, index: int) -> tuple[str, bytes]:
-        """Click one visible file button and read its isolated completed file."""
+        """Click a visible file button and capture its response inside Chrome.
+
+        Chrome 154 on the hosted VM crashes on native downloads after a
+        persistent-profile restart. DevTools response interception avoids the
+        download manager while keeping the request in the headed browser.
+        """
         if index < 0:
             raise ValueError("Invalid attachment index")
-        if self.download_dir is None:
-            raise InboxStateError("Attachment download directory is unavailable")
         events = self.page.locator(".msg-s-event-listitem[data-event-urn]")
         matching = [event for event in await events.all()
                     if await event.get_attribute("data-event-urn") == message_key]
@@ -209,43 +212,84 @@ class InboxBrowser:
         buttons = matching[0].locator("button.msg-s-event-listitem__download-attachment-button")
         if index >= await buttons.count():
             raise InboxStateError("Attachment button is missing")
-        before = {item.name for item in self.download_dir.iterdir()}
-        async with self.page.expect_download(timeout=20000) as download_info:
-            await buttons.nth(index).click()
-        download = await download_info.value
-        # Chrome 154 on the hosted VM crashes after a persistent-profile restart
-        # when Playwright asks for download.path() or save_as(). A disposable
-        # local-download probe completed three separate launches by reading the
-        # one finished file from Playwright's per-scan downloads directory.
-        return download.suggested_filename, await self._completed_download_bytes(before)
+        button = buttons.nth(index)
+        name_locator = button.locator(".ui-attachment__filename")
+        visible_name = (await name_locator.inner_text()).strip() if await name_locator.count() else ""
+        session = await self.page.context.new_cdp_session(self.page)
+        loop = asyncio.get_running_loop()
+        captured = loop.create_future()
+        tasks: set[asyncio.Task] = set()
 
-    async def _completed_download_bytes(self, before: set[str]) -> bytes:
-        if self.download_dir is None:
-            raise InboxStateError("Attachment download directory is unavailable")
-        deadline = asyncio.get_running_loop().time() + 20
-        while asyncio.get_running_loop().time() < deadline:
-            created = [item for item in self.download_dir.iterdir()
-                       if item.name not in before]
-            ready = [item for item in created if not item.name.endswith(".crdownload")]
-            if len(ready) > 1:
-                raise InboxStateError("More than one attachment file appeared")
-            if len(ready) == 1 and len(created) == 1:
-                path = ready[0]
-                if path.is_symlink() or not path.is_file():
-                    raise InboxStateError("Attachment path is not a regular file")
-                if path.stat().st_size > 25 * 1024 * 1024:
+        async def on_paused(event: dict) -> None:
+            request_id = event["requestId"]
+            try:
+                headers = {item["name"].lower(): item["value"]
+                           for item in event.get("responseHeaders", [])}
+                content_type = headers.get("content-type", "").split(";", 1)[0].lower()
+                disposition = headers.get("content-disposition", "")
+                is_file = "attachment" in disposition.lower() or content_type in {
+                    "application/pdf", "application/octet-stream", "application/zip",
+                    "application/msword", "application/vnd.ms-excel",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                }
+                if not is_file or captured.done():
+                    await session.send("Fetch.continueResponse", {"requestId": request_id})
+                    return
+                if event.get("responseStatusCode") != 200:
+                    raise InboxStateError("Attachment response was not HTTP 200")
+                length = headers.get("content-length", "")
+                if length.isdecimal() and int(length) > 25 * 1024 * 1024:
                     raise InboxStateError("Attachment exceeds the 25 MiB storage limit")
-                data = path.read_bytes()
-                await asyncio.sleep(0.2)
-                if data and path.exists() and path.read_bytes() == data:
-                    return data
-            await asyncio.sleep(0.1)
-        created = [item for item in self.download_dir.iterdir()
-                   if item.name not in before]
-        partial = sum(item.name.endswith(".crdownload") for item in created)
-        raise InboxStateError(
-            f"Attachment download did not complete (new files: {len(created)}, partial: {partial})"
-        )
+                response = await session.send("Fetch.getResponseBody", {
+                    "requestId": request_id,
+                })
+                data = (base64.b64decode(response["body"], validate=True)
+                        if response["base64Encoded"] else response["body"].encode())
+                if not data or len(data) > 25 * 1024 * 1024:
+                    raise InboxStateError("Attachment is empty or exceeds the 25 MiB storage limit")
+                header = Message()
+                header["content-disposition"] = disposition
+                filename = visible_name or header.get_filename()
+                if not filename:
+                    raise InboxStateError("Attachment filename is unavailable")
+                await session.send("Fetch.fulfillRequest", {
+                    "requestId": request_id, "responseCode": 204, "body": "",
+                })
+                captured.set_result((filename, data))
+            except Exception as exc:
+                try:
+                    await session.send("Fetch.failRequest", {
+                        "requestId": request_id, "errorReason": "Aborted",
+                    })
+                except Exception:
+                    pass
+                if not captured.done():
+                    captured.set_exception(exc)
+
+        def schedule(event: dict) -> None:
+            task = asyncio.create_task(on_paused(event))
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+
+        session.on("Fetch.requestPaused", schedule)
+        try:
+            await session.send("Browser.setDownloadBehavior", {"behavior": "deny"})
+            await session.send("Fetch.enable", {"patterns": [{
+                "urlPattern": "*", "requestStage": "Response",
+            }]})
+            await button.click()
+            return await asyncio.wait_for(captured, timeout=30)
+        except asyncio.TimeoutError as exc:
+            raise InboxStateError("No browser attachment response was captured") from exc
+        finally:
+            try:
+                await session.send("Fetch.disable")
+                await session.send("Browser.setDownloadBehavior", {"behavior": "default"})
+            finally:
+                await session.detach()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _active_row(self, thread_key: str | None, baseline: InboxRow):
         if thread_key is not None and thread_key_from_url(self.page.url) != thread_key:

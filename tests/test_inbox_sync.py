@@ -386,7 +386,7 @@ def test_inbox_sync_recovers_unread_after_download_and_restore_failure(tmp_path,
         )]
         assert len(TrackingRunner.instances) == 2
         assert all(runner.closed for runner in TrackingRunner.instances)
-        assert [runner.start_calls for runner in TrackingRunner.instances] == [[True], [None]]
+        assert [runner.start_calls for runner in TrackingRunner.instances] == [[None], [None]]
         assert coordinator.active is False
     finally:
         db.close_db()
