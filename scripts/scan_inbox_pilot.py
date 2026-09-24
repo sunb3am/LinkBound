@@ -18,6 +18,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run a no-send LinkedIn inbox pilot")
     parser.add_argument("--operator", required=True)
     parser.add_argument("--max-rows-per-folder", type=int, default=2)
+    parser.add_argument("--max-list-rows", type=int, default=500)
     args = parser.parse_args()
     if sys.platform.startswith("linux") and subprocess.run(
         ["systemctl", "is-active", "--quiet", "linkbound-app"], check=False
@@ -36,6 +37,7 @@ def main() -> int:
         result = asyncio.run(scan_account(
             settings, RunCoordinator(settings, None), args.operator,
             max_rows_per_folder=args.max_rows_per_folder,
+            max_list_rows=args.max_list_rows,
         ))
         print(json.dumps(result, sort_keys=True))
         return 1 if result["stopped"] else 0
