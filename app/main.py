@@ -84,6 +84,7 @@ app = FastAPI(
         TailscaleAuthMiddleware,
         enabled=settings.require_tailscale_auth,
         allowed_users=settings.tailscale_allowed_users,
+        allow_tailnet_devices=settings.allow_tailnet_devices,
     )],
 )
 gemini = GeminiClient(settings.ai)

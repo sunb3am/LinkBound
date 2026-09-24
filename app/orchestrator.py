@@ -26,6 +26,7 @@ from .models import (
 from .names import slug_from_url, split_full_name
 from .runner import LinkedInRunner, ProfileResult
 from .safety import SafetyGovernor, remaining_queue_budget
+from .linkedin_guard import LinkedInAccountStop
 from .settings import Settings
 from .templating import referenced_variables, render
 
@@ -155,16 +156,15 @@ class Orchestrator:
                     self._broadcast({"type": "resolve_progress", "done": i + 1, "total": len(targets)})
             else:
                 runner = LinkedInRunner(self.settings, operator)
-                await runner.start()
-                await runner.open_feed()
-                waited = 0
-                while not await runner.logged_in_now() and waited < 150:
-                    self._broadcast({"type": "resolve_login_wait"})
-                    await asyncio.sleep(3); waited += 3
-                if not await runner.logged_in_now():
-                    await runner.close()
-                    raise RuntimeError("Not logged into LinkedIn; cannot resolve from profiles.")
                 try:
+                    await runner.start()
+                    await runner.open_feed()
+                    waited = 0
+                    while not await runner.logged_in_now() and waited < 150:
+                        self._broadcast({"type": "resolve_login_wait"})
+                        await asyncio.sleep(3); waited += 3
+                    if not await runner.logged_in_now():
+                        raise RuntimeError("Not logged into LinkedIn; cannot resolve from profiles.")
                     for i, job in enumerate(targets):
                         info = await runner.resolve_profile(job["linkedin_url"])
                         name = info.get("name", "")
@@ -533,7 +533,10 @@ class Orchestrator:
             for campaign_id in {job.get("campaign_id") for job in jobs
                                 if job.get("campaign_id") is not None}:
                 with contextlib.suppress(Exception):
-                    db.set_campaign_status(campaign_id, "paused", "Browser run failed")
+                    db.set_campaign_status(
+                        campaign_id, "paused",
+                        str(exc) if isinstance(exc, LinkedInAccountStop) else "Browser run failed",
+                    )
             if self.batch_id:
                 with contextlib.suppress(Exception):
                     db.update_batch_counts(

@@ -14,18 +14,52 @@ account mapping, and queue stop controls are completed.
   and future `attachments` below the same data directory. Chrome profiles stay
   in `/var/lib/linkbound/profiles/<sender>` and are owned by `linkbound`.
 - Configuration: `/etc/linkbound/app.env`, owned by root, group `linkbound`, mode
-  0640. Start from `deploy/app.env.example`, replace the allowed user with the
-  exact Tailscale login, and retain `LINKBOUND_ALLOW_LIVE_SENDS=false`.
-- The app binds only to loopback. Tailscale Serve supplies the user login header
-  and strips the same header from incoming requests. The app checks that header
-  against its allowlist and accepts it only from a loopback proxy connection.
-  All HTTP routes, downloads, static files, and WebSockets pass through this
-  check. Local root processes can reach the loopback port, so host access is
-  restricted to trusted operators.
-- The app's Tailscale grant must permit the owner device to reach this Linode
-  on TCP 443. Keep the existing TCP 8443 viewer and TCP 22 SSH grants. Configure
-  Serve as `tailscale serve --bg --https=443 8000`, then check `tailscale serve
-  status` to confirm both endpoints remain present.
+  0640. Set `LINKBOUND_REQUIRE_TAILSCALE_AUTH=true` and
+  `LINKBOUND_ALLOW_TAILNET_DEVICES=true` to make tailnet reachability the web
+  access decision. Retain `LINKBOUND_ALLOW_LIVE_SENDS=false` during the guarded
+  pilot. Set `LINKBOUND_PILOT_DAILY_CAP=5` and
+  `LINKBOUND_PILOT_WEEKLY_CAP=20` as temporary Shubham ceilings before any
+  hosted send. The old per-login allowlist remains an optional narrower mode.
+- The app binds only to `127.0.0.1:8000`. In tailnet-device mode, it accepts
+  HTTP and WebSocket requests only from the local Tailscale Serve proxy, without
+  checking a login name. Tailscale Serve on ports 443 and 8443 stays private;
+  Funnel must remain off. Local trusted host processes can reach the loopback
+  port, so host access remains restricted.
+- Grant direct tailnet members and tagged tailnet devices access to this Linode
+  on TCP 443 and TCP 8443. Do not widen TCP 22 SSH access. A grant using
+  `autogroup:member` and `autogroup:tagged` excludes shared users and subnet
+  routes. Check `tailscale serve status` after a policy change and test from a
+  second member device.
+
+Add this grant to the existing tailnet policy's `grants` array. Keep the current
+SSH grant separate:
+
+```json
+{
+  "src": ["autogroup:member", "autogroup:tagged"],
+  "dst": ["100.103.144.62"],
+  "ip": ["tcp:443", "tcp:8443"]
+}
+```
+
+Before the first hosted send and after browser upgrades, record the real OS,
+timezone, locale, Chrome and Playwright versions, display, public egress IP,
+profile owner and mode, and observed login challenges. Compare with the prior
+record. Do not replace those values with a fabricated laptop identity.
+The Linux helper prints a JSON snapshot without cookies or profile contents:
+
+```bash
+sudo -u linkbound env DISPLAY=:1 \
+  /opt/linkbound/current/.venv/bin/python \
+  /opt/linkbound/current/scripts/capture_environment_baseline.py \
+  --account me --profile /var/lib/linkbound/profiles/me \
+  --challenge not_observed
+```
+
+Save its output under `/var/lib/linkbound/evidence/` with a timestamp and
+compare it to the preceding record before a hosted send. If the egress IP,
+account binding, or browser environment changed unexpectedly, inspect the
+headed session first.
 
 ## Deployment
 
@@ -39,7 +73,7 @@ active; it refuses to run while the Phase 0 pilot or any app browser operation
 is active. It builds a fresh virtual environment from `requirements-linux.lock`,
 stops the old app, snapshots the database and retained files, switches the
 release symlink, starts exactly one Uvicorn worker, and checks health and schema
-version 2. A failed deployment restores the previous unit and release link and
+version 5. A failed deployment restores the previous unit and release link and
 does not automatically resume an interrupted browser operation. The deployment
 log is `/var/log/linkbound/deploy.log`.
 
@@ -63,5 +97,6 @@ after a restore drill on the imported copy. Do not merge `yt` and
 The deployment snapshot is on the VM. An encrypted offsite destination and a
 scheduled copy are still required before treating this host as the only copy of
 production CRM data. The no-send gate remains in `/api/start`, `/api/v1/enqueue`,
-and the shared run coordinator. A controlled headed regression and explicit
-account-owner decision remain prerequisites to hosted sends.
+and the shared run coordinator. The operator has authorized hosted use for the
+initial Shubham account. A controlled headed regression of challenge, limit,
+and uncertain-send stops remains necessary before enabling hosted sends.

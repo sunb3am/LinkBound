@@ -54,6 +54,7 @@ class SafetyConfig:
 class BrowserConfig:
     channel: str = "chrome"
     headless: bool = False
+    chromium_sandbox: bool = False
     cdp_url: str = ""
     nav_timeout_ms: int = 30000
 
@@ -109,6 +110,7 @@ class Settings:
     templates: dict[str, str]
     require_tailscale_auth: bool
     tailscale_allowed_users: list[str]
+    allow_tailnet_devices: bool
     allow_live_sends: bool
     root: Path = ROOT
     data_dir: Path = DATA_DIR
@@ -163,7 +165,26 @@ def load_settings() -> Settings:
         )
 
     safety = SafetyConfig(**(cfg.get("safety") or {}))
+    for env_name, field_name in (
+        ("LINKBOUND_PILOT_DAILY_CAP", "daily_cap"),
+        ("LINKBOUND_PILOT_WEEKLY_CAP", "queue_weekly_cap"),
+    ):
+        value = os.environ.get(env_name)
+        if value is not None:
+            try:
+                cap = int(value)
+            except ValueError as exc:
+                raise ValueError(f"{env_name} must be a positive integer") from exc
+            if cap < 1 or cap > getattr(safety, field_name):
+                raise ValueError(f"{env_name} must be between 1 and the configured cap")
+            setattr(safety, field_name, cap)
     browser = BrowserConfig(**(cfg.get("browser") or {}))
+    sandbox_value = os.environ.get("LINKBOUND_CHROMIUM_SANDBOX")
+    if sandbox_value is not None:
+        sandbox_value = sandbox_value.strip().casefold()
+        if sandbox_value not in {"true", "false"}:
+            raise ValueError("LINKBOUND_CHROMIUM_SANDBOX must be true or false")
+        browser.chromium_sandbox = sandbox_value == "true"
     behavior = BehaviorConfig(**(cfg.get("behavior") or {}))
 
     ai_cfg = AIConfig(**(cfg.get("ai") or {}))
@@ -192,13 +213,19 @@ def load_settings() -> Settings:
     if auth_value not in {"true", "false"}:
         raise ValueError("LINKBOUND_REQUIRE_TAILSCALE_AUTH must be true or false")
     require_tailscale_auth = auth_value == "true"
+    tailnet_value = os.environ.get("LINKBOUND_ALLOW_TAILNET_DEVICES", "false").strip().casefold()
+    if tailnet_value not in {"true", "false"}:
+        raise ValueError("LINKBOUND_ALLOW_TAILNET_DEVICES must be true or false")
+    allow_tailnet_devices = tailnet_value == "true"
     tailscale_allowed_users = [
         user.strip().casefold()
         for user in os.environ.get("LINKBOUND_TAILSCALE_ALLOWED_USERS", "").split(",")
         if user.strip()
     ]
-    if require_tailscale_auth and not tailscale_allowed_users:
-        raise ValueError("LINKBOUND_TAILSCALE_ALLOWED_USERS is required when Tailscale auth is enabled")
+    if allow_tailnet_devices and not require_tailscale_auth:
+        raise ValueError("LINKBOUND_REQUIRE_TAILSCALE_AUTH must be true when allowing tailnet devices")
+    if require_tailscale_auth and not (tailscale_allowed_users or allow_tailnet_devices):
+        raise ValueError("Set LINKBOUND_TAILSCALE_ALLOWED_USERS or LINKBOUND_ALLOW_TAILNET_DEVICES")
 
     send_value = os.environ.get("LINKBOUND_ALLOW_LIVE_SENDS", "true").strip().casefold()
     if send_value not in {"true", "false"}:
@@ -217,6 +244,7 @@ def load_settings() -> Settings:
         templates={str(k): str(v) for k, v in templates.items()},
         require_tailscale_auth=require_tailscale_auth,
         tailscale_allowed_users=tailscale_allowed_users,
+        allow_tailnet_devices=allow_tailnet_devices,
         allow_live_sends=allow_live_sends,
         data_dir=data_dir,
         profile_root=profile_root,

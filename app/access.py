@@ -16,12 +16,14 @@ def _is_loopback(host: str | None) -> bool:
 
 
 class TailscaleAuthMiddleware:
-    """Trust Tailscale's identity header only from a local proxy connection."""
+    """Accept only the local Serve proxy, optionally filtering by its user header."""
 
-    def __init__(self, app, *, enabled: bool, allowed_users: Iterable[str]):
+    def __init__(self, app, *, enabled: bool, allowed_users: Iterable[str],
+                 allow_tailnet_devices: bool = False):
         self.app = app
         self.enabled = enabled
         self.allowed_users = {user.strip().casefold() for user in allowed_users if user.strip()}
+        self.allow_tailnet_devices = allow_tailnet_devices
 
     async def __call__(self, scope, receive, send):
         if not self.enabled:
@@ -32,7 +34,9 @@ class TailscaleAuthMiddleware:
         client_host = client[0] if client else None
         headers = dict(scope.get("headers", []))
         login = headers.get(b"tailscale-user-login", b"").decode("latin-1").strip().casefold()
-        allowed = _is_loopback(client_host) and bool(login) and login in self.allowed_users
+        allowed = _is_loopback(client_host) and (
+            self.allow_tailnet_devices or (bool(login) and login in self.allowed_users)
+        )
         if allowed:
             await self.app(scope, receive, send)
             return
