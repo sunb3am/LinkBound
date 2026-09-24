@@ -83,6 +83,9 @@ them.
   Linode proved encrypted backup, `restic check`, full restore, and LinkBound
   manifest verification. The private Object Storage bucket and limited key are
   still needed for an actual offsite upload and restore drill.
+- The current release's root-owned files were normalized to remove group write
+  access, and the deployment script now enforces that permission on new
+  releases. The app health check remained successful after the change.
 
 ## Remaining before closing Phase D
 

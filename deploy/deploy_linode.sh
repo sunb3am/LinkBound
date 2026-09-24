@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Install one reviewed release without overlapping browser-owning app processes.
 set -euo pipefail
+umask 022
 
 if [[ "${EUID}" -ne 0 || $# -ne 2 || ! "$1" =~ ^[0-9a-f]{7,40}$ ]]; then
   echo "Usage (as root): deploy_linode.sh COMMIT_SHA /absolute/path/release.tar" >&2
@@ -108,6 +109,8 @@ trap rollback ERR
 mkdir -p "$release"
 release_created=1
 tar -xf "$archive" -C "$release"
+chown -R root:root "$release"
+chmod -R go-w "$release"
 test -f "$release/requirements-linux.lock"
 [[ ! -e "$release/.env" ]] || {
   echo "Release contains a .env that could override the protected service configuration" >&2
