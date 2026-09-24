@@ -87,12 +87,10 @@ may require signing in again through the private viewer.
 
 ## Current release gates
 
-The first app deployment may start with a new empty database. Import the local
-CRM only after confirming which account owns each historical sender key and
-which login uses `/var/lib/linkbound/profiles/me`. Stop the app before replacing
-the empty database, retain a verified pre-import snapshot, and start it only
-after a restore drill on the imported copy. Do not merge `yt` and
-`yash_thakkar` based on their names alone.
+The deployed database already contains Shubham's inbound observations. Import
+his local outbound history additively using the
+[account-scoped import runbook](linkbound-shubham-history-import.md). Do not
+replace the hosted database or merge `yt` and `yash_thakkar` based on names.
 
 The deployment snapshot is on the VM. Follow the
 [offsite backup runbook](linkbound-offsite-backup.md) to provision the private
