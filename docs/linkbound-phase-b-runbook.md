@@ -73,7 +73,7 @@ active; it refuses to run while the Phase 0 pilot or any app browser operation
 is active. It builds a fresh virtual environment from `requirements-linux.lock`,
 stops the old app, snapshots the database and retained files, switches the
 release symlink, starts exactly one Uvicorn worker, and checks health and schema
-version 5. A failed deployment restores the previous unit and release link and
+version 9. A failed deployment restores the previous unit and release link and
 does not automatically resume an interrupted browser operation. The deployment
 log is `/var/log/linkbound/deploy.log`.
 

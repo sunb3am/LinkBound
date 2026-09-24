@@ -48,6 +48,7 @@ class FakeInboxBrowser:
         }],
     }
     restore_calls = []
+    list_limits = []
 
     def __init__(self, page):
         self.folder = None
@@ -69,7 +70,8 @@ class FakeInboxBrowser:
     async def rows(self):
         return self.rows_by_folder.get(self.folder, [])
 
-    async def all_rows(self):
+    async def all_rows(self, limit=500):
+        self.list_limits.append(limit)
         return await self.rows(), True
 
     async def validate_row(self, row):
@@ -155,7 +157,7 @@ class FailingThenRecoveringBrowser:
     async def rows(self):
         return [InboxRow(0, "Unread Person", "Unread preview", True, False)]
 
-    async def all_rows(self):
+    async def all_rows(self, limit=500):
         return await self.rows(), True
 
     async def validate_row(self, row):
@@ -240,7 +242,7 @@ class CrashBeforeKeyBrowser:
     async def rows(self):
         return [InboxRow(0, "Unread Person", "Unread preview", self.number == 0, False)]
 
-    async def all_rows(self):
+    async def all_rows(self, limit=500):
         return await self.rows(), True
 
     async def validate_row(self, row):
@@ -305,17 +307,23 @@ def test_inbox_sync_persists_messages_restores_unread_by_thread_and_reports_part
     db.set_operator_self_profile_url("sender", "https://linkedin.com/in/me")
     FakeRunner.instances.clear()
     FakeInboxBrowser.restore_calls.clear()
+    FakeInboxBrowser.list_limits.clear()
     monkeypatch.setattr(inbox_sync, "LinkedInRunner", FakeRunner)
     monkeypatch.setattr(inbox_sync, "InboxBrowser", FakeInboxBrowser)
     settings = SimpleNamespace(operators={"sender": SimpleNamespace(label="Me")}, data_dir=tmp_path)
 
     async def scan_twice():
-        first = await inbox_sync.scan_account(settings, DirectCoordinator(), "sender")
-        second = await inbox_sync.scan_account(settings, DirectCoordinator(), "sender")
+        first = await inbox_sync.scan_account(
+            settings, DirectCoordinator(), "sender", max_list_rows=20
+        )
+        second = await inbox_sync.scan_account(
+            settings, DirectCoordinator(), "sender", max_list_rows=20
+        )
         return first, second
 
     try:
         first, second = asyncio.run(scan_twice())
+        assert FakeInboxBrowser.list_limits == [20, 20]
 
         assert first["status"] == second["status"] == "partial"
         assert first["stopped"] and second["stopped"]

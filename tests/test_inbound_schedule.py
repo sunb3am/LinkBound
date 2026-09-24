@@ -27,8 +27,8 @@ def test_daily_inbound_runs_once_after_local_time(monkeypatch):
     calls = []
     runs = []
 
-    async def scan(_settings, _manager, operator, *, max_rows_per_folder):
-        calls.append((operator, max_rows_per_folder))
+    async def scan(_settings, _manager, operator, *, max_rows_per_folder, max_list_rows):
+        calls.append((operator, max_rows_per_folder, max_list_rows))
         runs.insert(0, {"started_at": "2026-09-24T01:05:00+00:00"})
         return {"run_id": 1, "status": "partial", "stopped": False}
 
@@ -40,7 +40,7 @@ def test_daily_inbound_runs_once_after_local_time(monkeypatch):
     assert asyncio.run(inbound_schedule.run_due_once(Coordinator(busy=True), settings(), due)) is False
     assert asyncio.run(inbound_schedule.run_due_once(Coordinator(), settings(), due)) is True
     assert asyncio.run(inbound_schedule.run_due_once(Coordinator(), settings(), due)) is False
-    assert calls == [("me", 2)]
+    assert calls == [("me", 2, 20)]
 
 
 def test_daily_inbound_disabled_by_default(monkeypatch):

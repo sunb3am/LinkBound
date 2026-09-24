@@ -15,7 +15,7 @@ remain browser-only; this review does not propose a LinkedIn API integration.
 | An unfamiliar device or location and suspicious web activity can trigger app approval, email verification, CAPTCHA, or identity checks. LinkedIn advises enabling cookies and avoiding VPNs or proxies to reduce sign-in challenges. | The first Linode sign-in may be treated as unfamiliar; LinkedIn does not say how it classifies this VM. The owner must handle any challenge manually. Repeatedly changing egress networks is contrary to LinkedIn's own advice. | [Security verification when signing in](https://www.linkedin.com/help/linkedin/answer/a1339220), [new-location notice](https://www.linkedin.com/help/linkedin/answer/a1337273) |
 | High volumes of messages or other content in a short period can lead to reduced visibility or account restrictions. All accounts have invitation limits, but LinkedIn does not publish a generally safe count; an invitation restriction typically lasts a week. | The configured 100 invitations per day is our ceiling, not a LinkedIn allowance. A fixed interval or lower count cannot guarantee safety. | [High volume of content shared](https://www.linkedin.com/help/linkedin/answer/a1339697/high-volume-of-messages-sent?lang=en), [invitation limits](https://www.linkedin.com/help/linkedin/answer/a550555) |
 | Unusually many page or profile views can trigger warnings or temporary viewing restrictions, and LinkedIn calls out systematic viewing as prohibited. | A large inbox/contact backfill has its own account risk even if it sends nothing. A daily collector should stop on these notices and report incomplete coverage. | [Restricted Action Message](https://www.linkedin.com/help/linkedin/answer/a1339210/restricted-action-message?lang=en), [Profile Scraping Limit Notification](https://www.linkedin.com/help/linkedin/answer/a1393432) |
-| Third-party software that automates LinkedIn website activity is disallowed. Automated inauthentic activity can lead to temporary or permanent account restriction. | A headed Chrome window, persistent cookies, careful pacing, or a clean pilot do not change LinkedIn's stated rule. Hosted sends require an explicit product and account-risk decision. | [Automated activity](https://www.linkedin.com/help/linkedin/answer/a1340567/automated-activity-on-linkedin?lang=en), [Account restrictions](https://www.linkedin.com/help/linkedin/answer/a1340522), [User Agreement §8.2](https://www.linkedin.com/legal/user-agreement) |
+| Third-party software that automates LinkedIn website activity is disallowed. Automated inauthentic activity can lead to temporary or permanent account restriction. | A headed Chrome window, persistent cookies, careful pacing, or a clean pilot do not change LinkedIn's stated rule. The operator authorized internal use of Shubham's account; engineering still has to verify its stop controls before enabling hosted sends. | [Automated activity](https://www.linkedin.com/help/linkedin/answer/a1340567/automated-activity-on-linkedin?lang=en), [Account restrictions](https://www.linkedin.com/help/linkedin/answer/a1340522), [User Agreement §8.2](https://www.linkedin.com/legal/user-agreement) |
 
 The published material does **not** specify LinkedIn's detection model, signal
 weights, thresholds, how it classifies cloud IPs, or a browser configuration
@@ -49,8 +49,8 @@ account restrictions.
 | Browser launch | `app/runner.py` uses a Playwright persistent Chrome context and passes a nondefault `AutomationControlled` launch flag. The pilot uses the same runner. | The flag's presence does not establish that LinkedIn trusts this browser. Do not add stealth plugins or further overrides based on unverified claims. Review any browser-flag change in a separate no-send regression test; the owner reports that the local send path has worked reliably. |
 | Session | `/var/lib/linkbound/profiles/me` is private to the non-root service user. The Phase 0 run reopened it and the owner confirmed a signed-in feed. | This proves session persistence for that test, not that LinkedIn has approved the environment. Keep one profile per account, one Chrome owner at a time, and protect profile backups as credentials. |
 | Outbound behavior | `config.yaml` currently allows `daily_cap: 100`, a fixed 30-second gap, and work outside business-hour gating; it stops on a recognized limit warning. | The daily cap and interval are internal settings with no published safe basis. Before hosted sends, agree a much smaller account-specific pilot budget, require a manual review gate, and test that every challenge, limit warning, and uncertain send pauses the account without automatic retry. Preserve the existing send selectors until a failing case is captured. |
-| Inbound behavior | A bounded headed pilot opened a controlled unread thread. Its unread marker disappeared and the visible Mark as unread action restored that marker. The pilot later stopped on a browser closure during file capture and recovered the marker in a fresh browser. No read-receipt reversal was established. | Keep pre-open unread intents, bounded coverage, and fail-closed recovery. Do not schedule daily scans until attachment capture and complete section handling are verified. Stop on challenges and restricted-action notices. |
-| Host security | noVNC and VNC bind to loopback and are reached through Tailscale. Playwright's Chromium sandbox defaults to off unless explicitly enabled; the pilot's observed Chrome command contained `--no-sandbox`. | Private ingress protects the VM control surface, not the LinkedIn account's policy standing. Test whether Chrome sandboxing can be enabled without breaking the headed pilot before production use; keep the browser under the non-root service account. |
+| Inbound behavior | A bounded headed pilot proved unread marker restoration. The Chrome native attachment download crashed after restart; a browser-response capture now works in the hosted Shubham profile. Runs 4 and 5 saved one file and restored three unread markers. Run 6 showed a large inbox backlog and explicitly partial coverage. No read-receipt reversal was established. | Keep pre-open unread intents, bounded coverage, and fail-closed recovery. The initial daily path now has a 20-row inspection cap per folder; verify it on the host before enabling it. Stop on challenges and restricted-action notices. |
+| Host security | noVNC and VNC bind to loopback and are reached through Tailscale. Chrome sandboxing passed a disposable headed test and is enabled for the hosted service. | Private ingress and browser sandboxing protect the host; neither establishes LinkedIn account-policy standing. Keep the browser under the non-root service account. |
 
 ## Work to add before hosted automation
 
@@ -71,15 +71,15 @@ account restrictions.
    review every initial send and account notice. Keep the current local browser
    workflow as the fallback. Do not treat absence of a warning as proof of safety.
 5. **Inbound scan discipline:** The unread-marker effect has been tested; a
-   restored marker may not undo a read receipt. Keep the scan bounded, record
-   partial coverage and failures, and resolve the hosted attachment crash
-   before scheduling. A challenge halts sync rather than prompting alternate
-   routes or escalating request volume.
+   restored marker may not undo a read receipt. The hosted attachment path now
+   works without native Chrome downloads. Keep the daily scan bounded, record
+   partial coverage and failures, and verify the 20-row scheduled path before
+   enabling it. A challenge halts sync rather than prompting alternate routes
+   or escalating request volume.
 
-The immediate engineering priority is the repeatable environment baseline,
-browser host security check, and complete challenge, restriction, limit, and
-uncertain-action stops. Attachment capture and broader inbox coverage remain
-part of Phase D.
+The environment baseline, browser host security, and central stop controls
+are implemented. Their live hosted send behavior still needs a controlled
+regression. Broader inbox coverage remains part of Phase D.
 The review provides no basis to claim the VM is a laptop or that browser
 automation is undetectable.
 
@@ -93,14 +93,17 @@ unconfirmed send and makes invitation send-button click errors stop rather
 than trying another submit method. These changes are covered by local tests;
 they do not show that every LinkedIn warning can be recognized.
 
-The Chrome sandbox succeeded in a disposable headed Linode profile. A separate
-disposable profile completed three local file downloads across three Chrome
-launches when the probe read completed bytes from an isolated download
-directory instead of calling Playwright `download.path()`. This is a bounded
-workaround observation, not proof that the signed-in LinkedIn attachment path
-is fixed. No hosted sends were enabled for these tests. Phase D still needs a
-bounded real attachment capture, unread restoration check, and serialized
-incremental coverage before a daily collector can run.
+The Chrome sandbox succeeded in a disposable headed Linode profile and is
+enabled in the hosted service. The temporary directory workaround did not
+survive stronger offline testing. Instead, the current collector captures a
+visible attachment click's response bytes through Chrome DevTools and denies
+the native download manager for that click. An offline slow 2 MiB PDF transfer
+succeeded across repeated profile restarts. Hosted no-send runs 4 and 5 then
+saved one real 52248-byte attachment without a browser crash and restored
+three unread markers. The file API and ZIP export bytes matched the stored
+SHA-256. The internal cause of Chrome's native-download `SIGSEGV` remains
+unknown. Hosted live sending remains disabled. The daily schedule is still
+disabled while the narrower 20-row path awaits hosted verification.
 
 ## Observation record
 

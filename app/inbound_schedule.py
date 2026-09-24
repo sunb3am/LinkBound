@@ -12,6 +12,7 @@ from .inbox_sync import scan_account
 
 
 _LOG = logging.getLogger(__name__)
+DAILY_LIST_ROW_LIMIT = 20
 
 
 async def run_due_once(manager, settings, now: datetime | None = None) -> bool:
@@ -34,6 +35,7 @@ async def run_due_once(manager, settings, now: datetime | None = None) -> bool:
     result = await scan_account(
         settings, manager, schedule.operator,
         max_rows_per_folder=schedule.max_rows_per_folder,
+        max_list_rows=DAILY_LIST_ROW_LIMIT,
     )
     _LOG.info("Scheduled inbound scan finished: run=%s status=%s stopped=%s",
               result["run_id"], result["status"], result["stopped"])

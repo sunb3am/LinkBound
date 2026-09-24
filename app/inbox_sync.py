@@ -1,8 +1,4 @@
-"""Bounded, no-send browser pilot for inbound message collection.
-
-The pilot records partial coverage while scrolling, older history, invitation
-state, and file downloads are still being validated. It must not be scheduled.
-"""
+"""Bounded, no-send browser collection with explicit partial coverage."""
 
 from __future__ import annotations
 
@@ -13,6 +9,7 @@ from .runner import LinkedInRunner
 
 
 MAX_ROWS_PER_FOLDER = 8
+MAX_LIST_ROWS = 500
 MAX_CONNECTION_PROFILES = 5
 EXPECTED_SECTIONS = (*FOLDERS, "requests", "sent_invitations", "tracked_connections")
 
@@ -104,12 +101,18 @@ def _direction(message: dict, own_url: str | None) -> str:
     return "unknown"
 
 
-async def scan_account(settings, coordinator, operator: str, *, max_rows_per_folder: int = MAX_ROWS_PER_FOLDER) -> dict:
-    """Run a manually triggered pilot with exclusive browser ownership."""
+async def scan_account(
+    settings, coordinator, operator: str, *,
+    max_rows_per_folder: int = MAX_ROWS_PER_FOLDER,
+    max_list_rows: int = MAX_LIST_ROWS,
+) -> dict:
+    """Collect a bounded inbox sample with exclusive browser ownership."""
     if operator not in settings.operators:
         raise ValueError("Unknown LinkedIn account")
     if not 1 <= max_rows_per_folder <= 20:
         raise ValueError("Pilot row limit must be between 1 and 20")
+    if not 1 <= max_list_rows <= MAX_LIST_ROWS:
+        raise ValueError("List inspection limit must be between 1 and 500")
     if getattr(getattr(settings, "browser", None), "cdp_url", ""):
         raise ValueError("Inbound scans require an owned persistent Chrome profile")
     account = next((item for item in db.list_operators() if item["key"] == operator), None)
@@ -136,7 +139,7 @@ async def scan_account(settings, coordinator, operator: str, *, max_rows_per_fol
                 folder_errors: list[str] = []
                 try:
                     await browser.open_list(folder)
-                    baseline, list_exhausted = await browser.all_rows()
+                    baseline, list_exhausted = await browser.all_rows(limit=max_list_rows)
                     observed = len(baseline)
                     previous = {
                         (item["section"], item["participant_name"], item["preview_text"])
@@ -271,7 +274,9 @@ async def scan_account(settings, coordinator, operator: str, *, max_rows_per_fol
                     "Collector reads changed visible conversations and recent rendered messages only"
                 )
                 if not list_exhausted:
-                    folder_errors.append("LinkedIn list exceeded the 500-row inspection cap")
+                    folder_errors.append(
+                        f"LinkedIn list exceeded the {max_list_rows}-row inspection cap"
+                    )
                 inbound_store.set_section_coverage(
                     run_id, folder, observed=observed, stored=stored,
                     unresolved=unresolved, complete=False,

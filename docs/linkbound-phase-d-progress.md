@@ -1,37 +1,92 @@
-# Phase D progress: inbound browser pilot
+# Phase D progress: deployed inbound browser collector
 
-Phase D is in progress on `codex/linkbound-phase-d`. This branch is not deployed. The Linode still serves the Phase C release, and live sending remains disabled.
+Status on 2026-09-23 Pacific: `codex/linkbound-phase-d` is pushed and deployed
+on the private Linode. Shubham's `me` profile is the only bound LinkedIn
+account. Hosted live sending and the daily inbound schedule remain disabled.
+The app is available at `https://linkbound-01.tailfbed29.ts.net/`; the headed
+browser viewer is at `https://linkbound-01.tailfbed29.ts.net:8443/`. Both use
+Tailscale Serve. The tailnet policy still needs the broader 443/8443 grant in
+[the runbook](linkbound-phase-b-runbook.md) before every member device can use
+them.
 
-## Built in this branch
+## What is deployed
 
-- Schema version 9 adds account-scoped sync runs, conversations, messages, attachments, positive connection observations, per-thread unread observations, durable unread open intents, and a unique LinkedIn profile URL binding for each sender. An intent is committed before an unread row is opened because LinkedIn's list row does not expose its thread URL. A later scan can retry an interrupted intent before it opens more threads.
-- Ingestion requires stable thread and message keys for canonical records. Repeated observations update the same record; conflicting keys or file bytes fail instead of silently merging people. A row with uncertain identity is not opened.
-- The Sessions screen saves the expected LinkedIn profile URL. Before any inbox collection or unread recovery, the headed browser reads the signed-in profile from LinkedIn's Me menu and requires an exact match. An unbound account, a mismatch, or a shared CDP context stops the scan. Message direction and contact matching use that verified URL; messages without a usable author URL remain `unknown`.
-- LinkedIn unread and LinkBound reviewed remain separate. The UI shows the last pre-open unread marker and restoration result. A changed preview reopens LinkBound review.
-- Private account-scoped routes and the Inbox & Sync screen list sync coverage, conversations, messages, and saved files. Bulk export includes source records, unread open intents, a contact CSV, and original saved bytes with checksum verification.
-- The coordinator reserves the one headed browser for an inbound operation. The manual collector uses the existing persistent Chrome profile and visible LinkedIn inbox controls. It stops on authentication, a selector change, an unverified unread marker, or a browser failure. Its folder and row coverage are explicitly partial. There is no daily scheduler yet.
-- The backup script includes saved inbound files, and the deployment migration check expects schema version 9. These changes have not been applied to the Linode production database.
+- Schema 9 stores account-scoped sync runs, conversations, messages, files,
+  positive connection observations, and durable unread open intents. Each
+  sender has a unique expected LinkedIn profile URL. The browser checks the
+  signed-in Me menu against that binding before collecting anything.
+- The existing headed, persistent Chrome profile and shared run coordinator
+  perform browser-only inbox collection. The collector inspects Focused,
+  Other, Archived, and Spam, prioritizes changed unread rows, and records
+  partial coverage. Message Requests and Sent Invitations are explicitly
+  `not_scanned` because Shubham's rendered inbox exposed no Requests control
+  and the Sent Invitations collector is not built.
+- Opening an unread conversation changes its LinkedIn unread marker. The
+  collector commits an open intent first, restores the visible marker after
+  collection, and stops if restoration cannot be verified. This cannot undo
+  a possible read receipt. LinkBound's reviewed flag is independent.
+- The Inbox & Sync UI and private account-scoped routes show sync coverage,
+  conversations, message text, files, and a ZIP export with source records and
+  checksums. The app API serves LinkBound data; LinkedIn access remains entirely
+  through the headed browser.
+- A daily no-send poller exists in the single app process. It is off by
+  default. When enabled for Shubham, it opens at most 2 changed conversations
+  per folder and inspects at most the first 20 list rows per folder. It records
+  everything beyond that limit as incomplete. A manual scan may inspect up to
+  500 list rows and open up to 20 changed conversations per folder.
+- Previously invited account contacts are checked in a rotation of at most 5
+  profiles per run. Only a verified first-degree profile records acceptance.
+  Shubham currently has no tracked invited contacts in the hosted database, so
+  this path has unit proof but no live account proof.
 
-## Hosted observations on 2026-09-23 and 2026-09-24
+## Hosted evidence
 
-- The `me` Chrome profile is Shubham Srivastava's account. The owner confirmed the signed-in feed after a browser restart.
-- The visible Me menu exposed Shubham's profile URL. A schema 9 scan on an isolated database copy verified that URL before opening the inbox. LinkedIn's visible account menu did not consistently appear through Playwright's accessibility role and text filters. The collector now checks the rendered menu directly, and the hosted scan passed that gate.
-- `https://www.linkedin.com/messaging/compose/` showed the inbox list without opening a thread. The ordinary Messaging URL auto-selected a thread. A controlled unread thread lost its unread marker when opened; the visible **Mark as unread** action restored that marker. This does not establish that a read receipt was undone.
-- The list row had no `href` or other stable thread key before opening. That is why the collector now saves a visible row identity and folder as an open intent before the click. Recovery requires one exact visible match; ambiguity stops the scan.
-- A bounded schema 9 scan against an isolated copy of the database collected one Focused conversation and one Other conversation. The Other PDF download event fired, then Chrome exited with `SIGSEGV` while Playwright awaited `download.path()`. The collector stopped. A fresh headed browser restored the Other unread marker; the copied database recorded its open intent and thread observation as `restored`. No attachment was saved. The hosted browser was Chrome 154.0.8037.57 with Playwright 1.63.0. No kernel out-of-memory event was found. Chrome minidumps remain on the host under the service account's Crash Reports directory.
-- The crash also reproduces without LinkedIn. A disposable persistent Chrome profile downloaded a small PDF from a local HTTP server on its first headed launch, then crashed on the download after the profile was closed and reopened. A plain text download reproduced the same failure. Two downloads in one browser session succeeded. This narrows the issue to the persistent browser download lifecycle, though its underlying cause is not established. `download.save_as()`, an explicit artifacts directory, an explicit downloads directory, omitting the custom Blink flag, disabling Chrome's download bubble, and Playwright 1.62.0 did not resolve the second-launch crash. Bundled Chromium 153 saved the second file but exited with `SIGSEGV` during close. Related [Playwright issue 42506](https://github.com/microsoft/playwright/issues/42506) and [issue 42831](https://github.com/microsoft/playwright/issues/42831) describe persistent-profile download failures on Windows; neither proves the cause on this Linux host.
-- A protected copy of the signed-in profile reproduced the crash. Clearing Chrome download history allowed one successful download, but the next launch failed. The live profile's History database was briefly cleared for a controlled diagnostic, then restored from a mode-600 backup at `/var/lib/linkbound/evidence/phase-d-history-before-download-repair-20260924.db`. The original two download rows and SQLite integrity check were verified after restoration. Cookies and the production LinkBound database were not changed. The signed-in LinkedIn feed remained available.
-- Tailscale access to the private app, browser viewer on port 8443, and SSH on port 22 works. After the diagnostic, `https://linkbound-01.tailfbed29.ts.net/api/v1/health` returned HTTP 200 and `{"ok":true,"version":"2.0.0","busy":false}`. The app service is active and still serves Phase C.
+- The first schema 9 scan on an isolated database copy proved the signed-in
+  profile binding and the unread restoration path. A real attachment click
+  triggered a Chrome 154 `SIGSEGV` after a persistent-profile restart. The
+  failure also reproduced with local test files and a disposable Chrome
+  profile, without LinkedIn. The root cause inside Chrome is not known.
+- Attachment capture now reads the completed response bytes through Chrome
+  DevTools Fetch during a visible download-button click and denies the native
+  download manager for that click. It does not call a LinkedIn API. Offline
+  2 MiB PDF transfers succeeded across repeated browser restarts. The hosted
+  no-send run 4 then captured one real file without a crash, restored three
+  unread markers, and left one already-read thread read. The downloaded file
+  had 52248 bytes; its SHA-256 matched stored metadata and the ZIP export.
+- Hosted run 5 completed without a crash, with 4 conversations, 5 messages,
+  and 1 file still recorded. Runs 4 and 5 had partial folder coverage by
+  design. The collector's repeat tests verify message and file deduplication;
+  the hosted pre-run message count was not separately recorded.
+- Hosted inventory run 6 completed with `stopped=false`, but its coverage is
+  partial: Focused observed 500 rows and hit the inspection cap; Other
+  observed 16; Archived 203; Spam 4. One changed conversation was stored from
+  each folder. Requests and Sent Invitations remained `not_scanned`. This
+  exposed a large backlog; a daily 500-row traversal would be too broad for
+  the initial scheduled job. The new 20-row daily cap has local tests but has
+  not yet run on the host.
+- The private app returned `{"ok":true,"version":"2.0.0","busy":false}`
+  after run 6. A local snapshot including saved files passed verification.
+  An isolated restore copy passed the same manifest verification. No encrypted
+  offsite destination is configured yet.
 
-## Verification and release gate
+## Remaining before closing Phase D
 
-`py -m pytest tests -q` passed with 105 tests. `py -m compileall -q app scripts`, `node --check static/app.js`, and `git diff --check` passed. The targeted collector tests cover repeat scans without duplicate records, unread restoration after an attachment failure, stopping on an unverified marker, recovery when Chrome closes before returning the thread URL, and account identity mismatches. The hosted copied database migrated to schema 9 and recorded the bounded scan without changing the live database. The schema 9 identity check passed in the headed browser. Disposable test profiles and scripts were removed from the host; the Chrome minidumps and protected History backup remain there.
+1. Deploy the 20-row daily bound, verify it on Shubham's hosted account, then
+   enable the daily no-send schedule. Keep incomplete coverage prominent in
+   the UI. Add deliberate backfill in small manual batches before claiming
+   complete history.
+2. Observe a real Message Requests control if one appears, then add a tested
+   browser collector. Build Sent Invitations observation without treating a
+   disappeared invitation as accepted. Verify first-degree acceptance against
+   an actual tracked Shubham contact. Older message history and source time
+   require visible browser evidence rather than inferred timestamps.
+3. Configure an encrypted offsite backup destination and restore test. The
+   local database and attachment restore is proven; offsite resilience is not.
+4. Run a controlled hosted send against a specified target and exact text to
+   verify the outbound stop controls. The user has authorized internal use of
+   Shubham's account; no separate account-owner approval gate is needed.
+   Live sends remain disabled until that concrete regression is complete.
 
-Phase D is not ready for a daily job or production rollout. Next work:
-
-1. Resolve the cross-restart persistent-browser download crash without depending on destructive Chrome history cleanup. Then prove file capture and export with actual bytes in a bounded hosted scan. Preserve unread restoration and stop conditions while doing this.
-2. Bind each sender's LinkedIn profile URL in Sessions after deploying schema 9. Add safe coverage of remaining rendered conversations and message requests, then tracked invitation and positive connection evidence. Make historical and incremental coverage, source timestamps, and uncertain identities explicit.
-3. Add the serialized daily schedule only after browser collection is stable. Run two controlled scans to verify no duplicate messages or files and that unread restoration survives restart.
-4. Verify backup and restore for saved files, add an encrypted offsite copy, and deploy Phase D with a migration and rollback check. Keep hosted sends disabled until the separate account-owner risk decision and controlled send gate in the access risk review.
-
-LinkedIn operations remain browser-only. The app's own private API is for its UI and CRM exports; it is not a LinkedIn API integration.
+The current risk controls and the successful no-send pilots do not establish
+that LinkedIn will allow or fail to detect the automation. See the
+[access risk review](linkbound-linkedin-access-risk-review.md).
