@@ -54,9 +54,11 @@ account restrictions.
 
 ## Work to add before hosted automation
 
-1. **Account-risk gate:** Review this report with each LinkedIn account owner and
-   record the decision to use a hosted worker. Keep hosted sends disabled until
-   that decision. A successful no-send login is a feasibility check only.
+1. **Project decision:** On 2026-09-23, the operator authorized internal hosted
+   use for the initial Shubham account and declined a separate account-owner
+   approval workflow. A successful no-send login remains a feasibility check.
+   Keep hosted sends disabled until the stop controls and a bounded headed
+   regression are demonstrated; authorization does not change LinkedIn's rule.
 2. **Environment baseline:** Record the actual browser version, OS, timezone,
    locale, display, outbound IP, account/profile ownership, and observed login
    challenges in a no-send run. Compare changes over time. Do not synthesize a
@@ -65,20 +67,40 @@ account restrictions.
    invitation or profile-view limits, restricted-action notices, and session
    loss. Pause that account and require a person to inspect it. Never auto-retry
    an invitation or message after an uncertain click.
-4. **Controlled activity pilot:** After the owner accepts the account risk,
-   choose a conservative per-account budget and review every initial send and
-   account notice. Keep the current local browser workflow as the fallback.
-   Do not treat absence of a warning as proof of safety.
+4. **Controlled activity pilot:** Use a conservative per-account budget and
+   review every initial send and account notice. Keep the current local browser
+   workflow as the fallback. Do not treat absence of a warning as proof of safety.
 5. **Inbound scan discipline:** The unread-marker effect has been tested; a
    restored marker may not undo a read receipt. Keep the scan bounded, record
    partial coverage and failures, and resolve the hosted attachment crash
    before scheduling. A challenge halts sync rather than prompting alternate
    routes or escalating request volume.
 
-This review makes no changes to the working outbound browser behavior or to
-the Linode login while the owner is using it. The unresolved decision is
-whether the value of hosted browser automation justifies LinkedIn's stated
-account-restriction risk for each sender account.
+The immediate engineering priority is the repeatable environment baseline,
+browser host security check, and complete challenge, restriction, limit, and
+uncertain-action stops. Attachment capture and broader inbox coverage remain
+part of Phase D.
+The review provides no basis to claim the VM is a laptop or that browser
+automation is undetectable.
+
+## Risk-control implementation
+
+The branch adds a repeatable, non-secret Linux environment snapshot, hosted
+pilot ceilings of 5 actions per day and 20 queued actions per week, visible
+page and HTTP stop checks before browser actions, and campaign pauses after a
+limit or uncertain result. It removes the message Enter retry after an
+unconfirmed send and makes invitation send-button click errors stop rather
+than trying another submit method. These changes are covered by local tests;
+they do not show that every LinkedIn warning can be recognized.
+
+The Chrome sandbox succeeded in a disposable headed Linode profile. A separate
+disposable profile completed three local file downloads across three Chrome
+launches when the probe read completed bytes from an isolated download
+directory instead of calling Playwright `download.path()`. This is a bounded
+workaround observation, not proof that the signed-in LinkedIn attachment path
+is fixed. No hosted sends were enabled for these tests. Phase D still needs a
+bounded real attachment capture, unread restoration check, and serialized
+incremental coverage before a daily collector can run.
 
 ## Observation record
 

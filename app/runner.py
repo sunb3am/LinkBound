@@ -24,6 +24,7 @@ from playwright.async_api import (
 )
 
 from .decision import PageState, decide_action
+from .linkedin_guard import LinkedInAccountStop, inspect_page
 from .models import ActionType, ItemStatus, NOTE_LIMITED_ACTIONS
 from .names import split_full_name
 from .settings import BrowserConfig, Settings
@@ -73,6 +74,7 @@ class LinkedInRunner:
             launch_kwargs: dict = {
                 "user_data_dir": str(profile_dir),
                 "headless": self.browser_cfg.headless,
+                "chromium_sandbox": self.browser_cfg.chromium_sandbox,
                 "args": ["--disable-blink-features=AutomationControlled"],
             }
             if self.browser_cfg.channel:
@@ -94,8 +96,13 @@ class LinkedInRunner:
 
     async def open_feed(self) -> None:
         page = self._require_page()
-        await page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded")
+        response = await page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded")
         await page.wait_for_timeout(2500)
+        if response is not None and response.status in {403, 429, 999}:
+            raise LinkedInAccountStop(f"LinkedIn returned HTTP {response.status}; inspect the account")
+        stop = await inspect_page(page)
+        if stop is not None and stop.kind != "login":
+            raise LinkedInAccountStop(stop.detail)
 
     async def logged_in_now(self) -> bool:
         page = self._require_page()
@@ -149,9 +156,17 @@ class LinkedInRunner:
 
         await page.wait_for_timeout(3000)
 
+        stop_result = await self._account_stop_result(page, trace)
+        if stop_result is not None:
+            return stop_result
+
         if response is not None and response.status == 404:
             trace.append("profile 404")
             return ProfileResult(ItemStatus.FAILED_404, "profile 404", trace=trace)
+        if response is not None and response.status >= 400:
+            status = ItemStatus.FAILED_LIMIT if response.status in {403, 429, 999} else ItemStatus.FAILED_OTHER
+            trace.append(f"LinkedIn returned HTTP {response.status}")
+            return ProfileResult(status, f"LinkedIn returned HTTP {response.status}; inspect the account", trace=trace)
         if "/404" in page.url or "unavailable" in page.url:
             trace.append("profile unavailable")
             return ProfileResult(ItemStatus.FAILED_404, "profile unavailable", trace=trace)
@@ -219,6 +234,10 @@ class LinkedInRunner:
                 custom_gemini_model=custom_gemini_model,
             )
 
+        stop_result = await self._account_stop_result(page, trace)
+        if stop_result is not None:
+            return stop_result
+
         # 3. Dry run: stop before any send.
         if dry_run:
             trace.append(f"DRY RUN: would execute {executed.value} (no send)")
@@ -251,6 +270,15 @@ class LinkedInRunner:
         res.headline = state.headline
         res.location = state.location
         return res
+
+    @staticmethod
+    async def _account_stop_result(page: Page, trace: list[str]) -> ProfileResult | None:
+        stop = await inspect_page(page)
+        if stop is None:
+            return None
+        trace.append(f"account stop: {stop.kind}: {stop.detail}")
+        status = ItemStatus.FAILED_LIMIT if stop.kind in {"limit", "restriction"} else ItemStatus.FAILED_OTHER
+        return ProfileResult(status, stop.detail, trace=trace)
 
     async def _ai_personalize(self, gemini, job: dict, state: PageState,
                               executed: ActionType, message: str, trace: list[str],
@@ -437,9 +465,14 @@ class LinkedInRunner:
             out["error"] = f"navigation error: {exc}"
             return out
         await page.wait_for_timeout(2500)
+        stop = await inspect_page(page)
+        if stop is not None:
+            raise LinkedInAccountStop(stop.detail)
         if resp is not None and resp.status == 404:
             out["error"] = "profile 404"
             return out
+        if resp is not None and resp.status >= 400:
+            raise LinkedInAccountStop(f"LinkedIn returned HTTP {resp.status}; inspect the account")
         await self._hide_chat_overlay(page)
         state = await self.detect_page_state(page)
         out.update({
@@ -485,13 +518,16 @@ class LinkedInRunner:
             await page.wait_for_timeout(600)
 
         if not with_note:
+            stop_result = await self._account_stop_result(page, trace)
+            if stop_result is not None:
+                return stop_result
             sent = (
-                await self._click_role_button(page, "Send without a note")
-                or await self._click_role_button(page, "Send invitation")
-                or await self._click_role_button(page, "Send")
+                await self._click_role_button(page, "Send without a note", stop_on_click_error=True)
+                or await self._click_role_button(page, "Send invitation", stop_on_click_error=True)
+                or await self._click_role_button(page, "Send", stop_on_click_error=True)
             )
             if not sent:
-                await page.keyboard.press("Enter")
+                return ProfileResult(ItemStatus.FAILED_OTHER, "invite Send button not found", trace=trace)
             trace.append("sent connection request without a note")
             await page.wait_for_timeout(2500)
             pending = await self._pending_visible(page)
@@ -509,12 +545,15 @@ class LinkedInRunner:
         trace.append(f"note field filled: {note_ok}")
 
         if note_ok:
+            stop_result = await self._account_stop_result(page, trace)
+            if stop_result is not None:
+                return stop_result
             sent = (
-                await self._click_role_button(page, "Send invitation")
-                or await self._click_role_button(page, "Send")
+                await self._click_role_button(page, "Send invitation", stop_on_click_error=True)
+                or await self._click_role_button(page, "Send", stop_on_click_error=True)
             )
             if not sent:
-                await page.keyboard.press("Enter")
+                return ProfileResult(ItemStatus.FAILED_OTHER, "invite Send button not found", trace=trace)
             trace.append("clicked Send invitation (with note)")
             await page.wait_for_timeout(2500)
             pending = await self._pending_visible(page)
@@ -532,13 +571,16 @@ class LinkedInRunner:
             shot = await self._screenshot(page, job, "note_unavailable")
             return ProfileResult(ItemStatus.NEEDS_ATTENTION,
                                  "could not add a note and noteless fallback is off", shot, trace=trace)
+        stop_result = await self._account_stop_result(page, trace)
+        if stop_result is not None:
+            return stop_result
         sent = (
-            await self._click_role_button(page, "Send without a note")
-            or await self._click_role_button(page, "Send invitation")
-            or await self._click_role_button(page, "Send")
+            await self._click_role_button(page, "Send without a note", stop_on_click_error=True)
+            or await self._click_role_button(page, "Send invitation", stop_on_click_error=True)
+            or await self._click_role_button(page, "Send", stop_on_click_error=True)
         )
         if not sent:
-            await page.keyboard.press("Enter")
+            return ProfileResult(ItemStatus.FAILED_OTHER, "invite Send button not found", trace=trace)
         trace.append("note unavailable -> sent without a note (fallback allowed)")
         await page.wait_for_timeout(2500)
         pending = await self._pending_visible(page)
@@ -826,17 +868,13 @@ class LinkedInRunner:
             return ProfileResult(ItemStatus.FAILED_OTHER, f"could not type into {kind} composer", shot, trace=trace)
         await page.wait_for_timeout(800)
 
+        stop_result = await self._account_stop_result(page, trace)
+        if stop_result is not None:
+            return stop_result
+
         if not await self._click_send_button(scope, composer):
-            try:
-                await composer.press("Control+Enter")
-            except Exception:
-                pass
+            return ProfileResult(ItemStatus.FAILED_OTHER, f"{kind} Send button not found", trace=trace)
         await page.wait_for_timeout(1500)
-        if not await self._message_confirmed(scope, composer, needle):
-            try:
-                await composer.press("Enter")
-            except Exception:
-                pass
         await page.wait_for_timeout(2500)
 
         sent_ok = await self._message_confirmed(scope, composer, needle)
@@ -1111,17 +1149,18 @@ class LinkedInRunner:
                 try:
                     if not await b.is_visible() or not await b.is_enabled():
                         continue
-                    await b.click(timeout=3000)
-                    return True
                 except Exception:
                     continue
-        try:
-            b = scope.get_by_role("button", name="Send", exact=True).last
-            if await b.is_visible() and await b.is_enabled():
                 await b.click(timeout=3000)
                 return True
+        try:
+            b = scope.get_by_role("button", name="Send", exact=True).last
+            available = await b.is_visible() and await b.is_enabled()
         except Exception:
-            pass
+            return False
+        if available:
+            await b.click(timeout=3000)
+            return True
         return False
 
     async def _message_confirmed(self, scope, composer, needle: str) -> bool:
@@ -1235,7 +1274,8 @@ class LinkedInRunner:
         except Exception:
             return False
 
-    async def _click_role_button(self, page: Page, name: str, timeout_ms: int = 4000) -> bool:
+    async def _click_role_button(self, page: Page, name: str, timeout_ms: int = 4000,
+                                 *, stop_on_click_error: bool = False) -> bool:
         try:
             loc = page.get_by_role("button", name=name, exact=True)
             count = await loc.count()
@@ -1247,10 +1287,14 @@ class LinkedInRunner:
                 if not await b.is_visible():
                     continue
                 await b.scroll_into_view_if_needed(timeout=1500)
+            except Exception:
+                continue
+            try:
                 await b.click(timeout=timeout_ms)
                 return True
             except Exception:
-                continue
+                if stop_on_click_error:
+                    raise
         return False
 
     async def _pending_visible(self, page: Page) -> bool:

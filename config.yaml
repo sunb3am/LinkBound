@@ -18,9 +18,8 @@ operators:
   #   label: "Alice Chen"
   #   profile_dir: "profiles/alice"
 
-# Safety governor. Conservative defaults to protect your account.
-# Research consensus (2026): 15-25 connection requests/day for established
-# accounts, randomized timing, stop on any limit warning.
+# Safety governor. These are internal ceilings, not LinkedIn allowances.
+# The hosted pilot uses lower environment overrides before live sending.
 safety:
   daily_cap: 100 # internal rolling 24-hour cap across confirmed and possible outbound actions
   queue_weekly_cap: 100 # internal rolling 7-day queue cap; review per account before hosted sends

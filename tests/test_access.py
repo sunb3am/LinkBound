@@ -18,7 +18,10 @@ async def invoke(middleware, scope):
     async def send(event):
         events.append(event)
 
-    wrapped = TailscaleAuthMiddleware(app, enabled=middleware[0], allowed_users=middleware[1])
+    wrapped = TailscaleAuthMiddleware(
+        app, enabled=middleware[0], allowed_users=middleware[1],
+        allow_tailnet_devices=middleware[2] if len(middleware) > 2 else False,
+    )
     await wrapped(scope, receive, send)
     return events
 
@@ -55,6 +58,23 @@ def test_empty_allowlist_denies_even_with_loopback_identity():
     assert events[0]["status"] == 403
 
 
+def test_tailnet_device_mode_allows_headerless_serve_requests():
+    events = asyncio.run(invoke((True, [], True), http_scope("/api/config")))
+    assert events == [{"type": "app.called"}]
+
+
+@pytest.mark.parametrize("host", ["100.64.0.1", "192.168.1.5", "unknown"])
+def test_tailnet_device_mode_rejects_non_proxy_clients(host):
+    events = asyncio.run(invoke((True, [], True), http_scope(host=host, login="owner@example.com")))
+    assert events[0]["status"] == 403
+
+
+def test_tailnet_device_mode_allows_headerless_websocket_from_proxy():
+    scope = {"type": "websocket", "path": "/ws", "headers": [], "client": ("::1", 1234)}
+    events = asyncio.run(invoke((True, [], True), scope))
+    assert events == [{"type": "app.called"}]
+
+
 def test_disabled_auth_preserves_local_app_access():
     events = asyncio.run(invoke((False, []), http_scope("/api/config")))
     assert events == [{"type": "app.called"}]
@@ -82,6 +102,45 @@ def test_hosted_auth_misconfiguration_fails_at_startup(tmp_path, monkeypatch, va
     monkeypatch.setenv("LINKBOUND_REQUIRE_TAILSCALE_AUTH", value)
     monkeypatch.setenv("LINKBOUND_TAILSCALE_ALLOWED_USERS", users)
     with pytest.raises(ValueError, match="LINKBOUND_"):
+        load_settings()
+
+
+def test_tailnet_device_mode_requires_proxy_gate(tmp_path, monkeypatch):
+    monkeypatch.setenv("LINKBOUND_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LINKBOUND_REQUIRE_TAILSCALE_AUTH", "false")
+    monkeypatch.setenv("LINKBOUND_ALLOW_TAILNET_DEVICES", "true")
+    with pytest.raises(ValueError, match="LINKBOUND_REQUIRE_TAILSCALE_AUTH"):
+        load_settings()
+
+
+def test_tailnet_device_mode_replaces_user_allowlist(tmp_path, monkeypatch):
+    monkeypatch.setenv("LINKBOUND_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LINKBOUND_REQUIRE_TAILSCALE_AUTH", "true")
+    monkeypatch.setenv("LINKBOUND_ALLOW_TAILNET_DEVICES", "true")
+    monkeypatch.delenv("LINKBOUND_TAILSCALE_ALLOWED_USERS", raising=False)
+    settings = load_settings()
+    assert settings.allow_tailnet_devices is True
+    assert settings.tailscale_allowed_users == []
+
+
+def test_hosted_chrome_sandbox_flag(tmp_path, monkeypatch):
+    monkeypatch.setenv("LINKBOUND_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LINKBOUND_CHROMIUM_SANDBOX", "true")
+    assert load_settings().browser.chromium_sandbox is True
+    monkeypatch.setenv("LINKBOUND_CHROMIUM_SANDBOX", "invalid")
+    with pytest.raises(ValueError, match="LINKBOUND_CHROMIUM_SANDBOX"):
+        load_settings()
+
+
+def test_hosted_pilot_caps_lower_configured_ceiling(tmp_path, monkeypatch):
+    monkeypatch.setenv("LINKBOUND_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LINKBOUND_PILOT_DAILY_CAP", "5")
+    monkeypatch.setenv("LINKBOUND_PILOT_WEEKLY_CAP", "20")
+    settings = load_settings()
+    assert settings.safety.daily_cap == 5
+    assert settings.safety.queue_weekly_cap == 20
+    monkeypatch.setenv("LINKBOUND_PILOT_DAILY_CAP", "101")
+    with pytest.raises(ValueError, match="LINKBOUND_PILOT_DAILY_CAP"):
         load_settings()
 
 

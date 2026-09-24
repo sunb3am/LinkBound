@@ -39,3 +39,37 @@ def test_private_mode_guards_dashboard_api_and_static(tmp_path, monkeypatch):
         asyncio.run(check())
     finally:
         db.close_db()
+
+
+def test_tailnet_device_mode_serves_dashboard_without_user_allowlist(tmp_path, monkeypatch):
+    db.close_db()
+    monkeypatch.setenv("LINKBOUND_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LINKBOUND_REQUIRE_TAILSCALE_AUTH", "true")
+    monkeypatch.setenv("LINKBOUND_ALLOW_TAILNET_DEVICES", "true")
+    monkeypatch.delenv("LINKBOUND_TAILSCALE_ALLOWED_USERS", raising=False)
+    monkeypatch.setenv("LINKBOUND_ALLOW_LIVE_SENDS", "false")
+    main = importlib.reload(importlib.import_module("app.main"))
+
+    async def check():
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            assert (await client.get("/")).status_code == 200
+            config = await client.get("/api/config")
+            assert config.status_code == 200
+            assert config.json()["live_sends_enabled"] is False
+            blocked_send = await client.post(
+                "/api/start",
+                json={"upload_id": "irrelevant", "operator": "me", "dry_run": False},
+            )
+            assert blocked_send.status_code == 409
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app, client=("100.64.0.1", 1234)),
+            base_url="http://test",
+        ) as client:
+            assert (await client.get("/")).status_code == 403
+
+    try:
+        asyncio.run(check())
+    finally:
+        db.close_db()

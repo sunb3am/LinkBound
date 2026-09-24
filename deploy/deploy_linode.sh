@@ -18,24 +18,33 @@ unit_file="/etc/systemd/system/linkbound-app.service"
   exit 2
 }
 
-# Keep hosted sends disabled until the owner reviews the risk pilot and a
-# controlled headed regression verifies the stop controls.
+# Keep hosted sends disabled until a controlled headed regression verifies
+# the stop controls on the server.
 set -a
 source "$env_file"
 set +a
 [[ "${LINKBOUND_REQUIRE_TAILSCALE_AUTH:-}" == "true" &&
    "${LINKBOUND_ALLOW_LIVE_SENDS:-}" == "false" &&
-   -n "${LINKBOUND_TAILSCALE_ALLOWED_USERS:-}" &&
    "${LINKBOUND_DATA_DIR:-}" = /* &&
    "${LINKBOUND_PROFILE_ROOT:-}" = /* ]] || {
   echo "Private auth, persistent paths, and the no-send gate must be configured" >&2
   exit 2
 }
-owner_login="${LINKBOUND_TAILSCALE_ALLOWED_USERS%%,*}"
+if [[ "${LINKBOUND_ALLOW_TAILNET_DEVICES:-false}" != "true" &&
+      -z "${LINKBOUND_TAILSCALE_ALLOWED_USERS:-}" ]]; then
+  echo "Configure tailnet-device access or a Tailscale login allowlist" >&2
+  exit 2
+fi
+owner_login="${LINKBOUND_TAILSCALE_ALLOWED_USERS:-}"
+owner_login="${owner_login%%,*}"
 [[ "$owner_login" != *'['* && "$owner_login" != *']'* ]] || {
   echo "Replace the Tailscale login placeholder before deployment" >&2
   exit 2
 }
+health_headers=()
+if [[ -n "$owner_login" ]]; then
+  health_headers=(-H "Tailscale-User-Login: $owner_login")
+fi
 
 if systemctl is-active --quiet linkbound-phase0-pilot.service; then
   echo "Stop the Phase 0 pilot browser before deploying the app" >&2
@@ -51,7 +60,7 @@ if systemctl is-active --quiet linkbound-app.service; then
   was_active=1
   # Active browser work must finish before the old process is stopped.
   status="$(curl --silent --show-error --fail --max-time 5 \
-    -H "Tailscale-User-Login: $owner_login" http://127.0.0.1:8000/api/v1/health)"
+    "${health_headers[@]}" http://127.0.0.1:8000/api/v1/health)"
   if ! python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(1 if s.get("busy") is not False else 0)' <<< "$status"; then
     echo "A browser operation is active; wait for it to finish" >&2
     exit 1
@@ -150,7 +159,7 @@ systemctl start linkbound-app.service
 ready=0
 for attempt in $(seq 1 30); do
   if curl --silent --show-error --fail --max-time 2 \
-      -H "Tailscale-User-Login: $owner_login" \
+      "${health_headers[@]}" \
       http://127.0.0.1:8000/api/v1/health | \
       python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ok") is True else 1)' 2>/dev/null; then
     ready=1
