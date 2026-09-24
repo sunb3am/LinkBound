@@ -1,8 +1,9 @@
 # Phase D progress: deployed inbound browser collector
 
 Status on 2026-09-23 Pacific: `codex/linkbound-phase-d` is pushed and deployed
-on the private Linode. Shubham's `me` profile is the only bound LinkedIn
-account. Hosted live sending and the daily inbound schedule remain disabled.
+on the private Linode at code commit `048179e`. Shubham's `me` profile is the
+only bound LinkedIn account. Hosted live sending remains disabled. The daily
+no-send inbound schedule is enabled for 18:00 America/Los_Angeles.
 The app is available at `https://linkbound-01.tailfbed29.ts.net/`; the headed
 browser viewer is at `https://linkbound-01.tailfbed29.ts.net:8443/`. Both use
 Tailscale Serve. The tailnet policy still needs the broader 443/8443 grant in
@@ -29,9 +30,10 @@ them.
   conversations, message text, files, and a ZIP export with source records and
   checksums. The app API serves LinkBound data; LinkedIn access remains entirely
   through the headed browser.
-- A daily no-send poller exists in the single app process. It is off by
-  default. When enabled for Shubham, it opens at most 2 changed conversations
-  per folder and inspects at most the first 20 list rows per folder. It records
+- A daily no-send poller runs in the single app process. It is off by default
+  in source configuration and enabled on this host for Shubham. It opens at
+  most 2 changed conversations per folder and inspects at most the first 20
+  list rows per folder. It records
   everything beyond that limit as incomplete. A manual scan may inspect up to
   500 list rows and open up to 20 changed conversations per folder.
 - Previously invited account contacts are checked in a rotation of at most 5
@@ -62,19 +64,27 @@ them.
   observed 16; Archived 203; Spam 4. One changed conversation was stored from
   each folder. Requests and Sent Invitations remained `not_scanned`. This
   exposed a large backlog; a daily 500-row traversal would be too broad for
-  the initial scheduled job. The new 20-row daily cap has local tests but has
-  not yet run on the host.
-- The private app returned `{"ok":true,"version":"2.0.0","busy":false}`
-  after run 6. A local snapshot including saved files passed verification.
-  An isolated restore copy passed the same manifest verification. No encrypted
+  the initial scheduled job.
+- Hosted run 7 used the same 20-row list cap as the daily schedule and exited
+  with `stopped=false`. It observed 20 Focused, 16 Other, 20 Archived, and 4
+  Spam rows, opening 2 changed conversations from each folder. The database
+  recorded 1 restored unread marker and 7 already-read conversations. The CRM
+  then held 16 conversations, 16 messages, and 1 file. Focused and Archived
+  explicitly reported that their lists extended beyond the cap.
+- After run 7, the private app returned
+  `{"ok":true,"version":"2.0.0","busy":false}`. Its configuration reported
+  `inbound_schedule.enabled=true`, operator `me`, time `18:00`, timezone
+  `America/Los_Angeles`, 2 opened rows per folder, and
+  `live_sends_enabled=false`. A local snapshot including saved files passed
+  verification. An isolated restore copy passed the same manifest verification. No encrypted
   offsite destination is configured yet.
 
 ## Remaining before closing Phase D
 
-1. Deploy the 20-row daily bound, verify it on Shubham's hosted account, then
-   enable the daily no-send schedule. Keep incomplete coverage prominent in
-   the UI. Add deliberate backfill in small manual batches before claiming
-   complete history.
+1. Observe the first automatic daily run and confirm the same bounded
+   coverage, unread restoration, and no duplicate messages or files. Keep
+   incomplete coverage prominent in the UI. Add deliberate backfill in small
+   manual batches before claiming complete history.
 2. Observe a real Message Requests control if one appears, then add a tested
    browser collector. Build Sent Invitations observation without treating a
    disappeared invitation as accepted. Verify first-degree acceptance against

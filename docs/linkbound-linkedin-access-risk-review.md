@@ -48,11 +48,11 @@ account restrictions.
 | Browser and OS | Ubuntu 24.04.4, Google Chrome 154.0.8037.57, Playwright 1.63.0, headed Chrome on a 1440x900 Xvnc display. The VM timezone is UTC and locale is `en_US.UTF-8`. | These are real, observable properties of a Linux VM and may differ from the laptop. Headed mode enables manual intervention; it is not proof of non-detection. Record actual values and avoid fabricated OS, user-agent, timezone, or device claims. |
 | Browser launch | `app/runner.py` uses a Playwright persistent Chrome context and passes a nondefault `AutomationControlled` launch flag. The pilot uses the same runner. | The flag's presence does not establish that LinkedIn trusts this browser. Do not add stealth plugins or further overrides based on unverified claims. Review any browser-flag change in a separate no-send regression test; the owner reports that the local send path has worked reliably. |
 | Session | `/var/lib/linkbound/profiles/me` is private to the non-root service user. The Phase 0 run reopened it and the owner confirmed a signed-in feed. | This proves session persistence for that test, not that LinkedIn has approved the environment. Keep one profile per account, one Chrome owner at a time, and protect profile backups as credentials. |
-| Outbound behavior | `config.yaml` currently allows `daily_cap: 100`, a fixed 30-second gap, and work outside business-hour gating; it stops on a recognized limit warning. | The daily cap and interval are internal settings with no published safe basis. Before hosted sends, agree a much smaller account-specific pilot budget, require a manual review gate, and test that every challenge, limit warning, and uncertain send pauses the account without automatic retry. Preserve the existing send selectors until a failing case is captured. |
-| Inbound behavior | A bounded headed pilot proved unread marker restoration. The Chrome native attachment download crashed after restart; a browser-response capture now works in the hosted Shubham profile. Runs 4 and 5 saved one file and restored three unread markers. Run 6 showed a large inbox backlog and explicitly partial coverage. No read-receipt reversal was established. | Keep pre-open unread intents, bounded coverage, and fail-closed recovery. The initial daily path now has a 20-row inspection cap per folder; verify it on the host before enabling it. Stop on challenges and restricted-action notices. |
+| Outbound behavior | `config.yaml` allows `daily_cap: 100`, a fixed 30-second gap, and work outside business-hour gating. The hosted environment overrides that with pilot ceilings of 5 actions per day and 20 per week; live sends are disabled. | These are internal limits with no published safe basis. Test the challenge, limit, and uncertain-send stops in a controlled hosted regression before enabling sends. Review each initial send result. Preserve the existing send selectors until a failing case is captured. |
+| Inbound behavior | A bounded headed pilot proved unread marker restoration. The Chrome native attachment download crashed after restart; a browser-response capture now works in the hosted Shubham profile. Runs 4 and 5 saved one file and restored three unread markers. Run 6 showed a large inbox backlog. Run 7 verified the 20-row limit per folder and restored one unread marker. No read-receipt reversal was established. | Keep pre-open unread intents, bounded coverage, and fail-closed recovery. The daily no-send job is enabled for Shubham with a 20-row inspection cap per folder; confirm its first automatic run. Stop on challenges and restricted-action notices. |
 | Host security | noVNC and VNC bind to loopback and are reached through Tailscale. Chrome sandboxing passed a disposable headed test and is enabled for the hosted service. | Private ingress and browser sandboxing protect the host; neither establishes LinkedIn account-policy standing. Keep the browser under the non-root service account. |
 
-## Work to add before hosted automation
+## Risk controls and remaining checks
 
 1. **Project decision:** On 2026-09-23, the operator authorized internal hosted
    use for the initial Shubham account and declined a separate account-owner
@@ -73,8 +73,8 @@ account restrictions.
 5. **Inbound scan discipline:** The unread-marker effect has been tested; a
    restored marker may not undo a read receipt. The hosted attachment path now
    works without native Chrome downloads. Keep the daily scan bounded, record
-   partial coverage and failures, and verify the 20-row scheduled path before
-   enabling it. A challenge halts sync rather than prompting alternate routes
+   partial coverage and failures, and observe the first automatic daily run.
+   A challenge halts sync rather than prompting alternate routes
    or escalating request volume.
 
 The environment baseline, browser host security, and central stop controls
@@ -102,8 +102,9 @@ succeeded across repeated profile restarts. Hosted no-send runs 4 and 5 then
 saved one real 52248-byte attachment without a browser crash and restored
 three unread markers. The file API and ZIP export bytes matched the stored
 SHA-256. The internal cause of Chrome's native-download `SIGSEGV` remains
-unknown. Hosted live sending remains disabled. The daily schedule is still
-disabled while the narrower 20-row path awaits hosted verification.
+unknown. Hosted live sending remains disabled. The 20-row daily path passed a
+hosted no-send pilot and is enabled for Shubham. Its first automatic run still
+needs to be observed.
 
 ## Observation record
 
