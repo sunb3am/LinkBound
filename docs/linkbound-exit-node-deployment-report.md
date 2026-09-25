@@ -48,7 +48,10 @@ login state, and behavior when the node becomes unavailable. Do not enable
 the paused daily inbox job or hosted sends merely because the route works;
 their separate account-identity and send regression gates still apply.
 
-The automatic approval review rejected pushing this private branch to the
-configured GitHub remote until the user explicitly authorizes that exact
-destination and payload. The commits remain on local branch
-`codex/linkbound-exit-node-selection`.
+The initial automatic approval review rejected pushing this private branch
+until the user explicitly authorized the destination and payload. The user
+granted that approval on 2026-09-25. Branch
+`codex/linkbound-exit-node-selection` was then pushed to the configured
+GitHub remote at documentation commit `d873445`; the local tracking ref
+matches that commit. The Linode still runs code commit `41ee9ae`, since
+`d873445` only added this deployment record.
