@@ -463,10 +463,9 @@ class LinkedInRunner:
     async def detect_page_state(self, page: Page) -> PageState:
         """Read the profile top card: degree badge, action buttons, pending state.
 
-        Scoped to the left/main column (x < 800) so the right-rail "More profiles
-        for you" suggestions (which also show 2nd/3rd badges and Message/Connect
-        buttons) never pollute detection. Uses accessible text/aria, not fixed
-        coordinates.
+        Scope to the left profile card so right-rail suggestions cannot supply
+        a false degree or action. Read rendered H1/H2 headings and nearby degree
+        text without relying on LinkedIn's changing CSS class names.
         """
         try:
             info = await page.evaluate(
@@ -474,23 +473,42 @@ class LinkedInRunner:
                     const out = {degree:'unknown', connect:'none', hasMessage:false,
                                  pending:false, name:'', follow:false, headline:'', location:''};
                     const main = document.querySelector('main') || document.body;
-                    const h1 = main.querySelector('h1');
-                    const hr = h1 ? h1.getBoundingClientRect() : null;
-                    if (h1) out.name = h1.textContent.trim();
                     const vis = (el) => {
                         const s = window.getComputedStyle(el);
                         if (s.display === 'none' || s.visibility === 'hidden') return false;
                         const r = el.getBoundingClientRect();
                         return r.width > 1 && r.height > 1;
                     };
-                    const degRe = /^(?:\\u00b7\\s*)?(1st|2nd|3rd)\\+?$/;
+                    const actions = Array.from(main.querySelectorAll('button, a'))
+                        .filter(el => {
+                            const r = el.getBoundingClientRect();
+                            return vis(el) && r.x < 800 &&
+                                /^(Message|Connect|More|Follow|Pending)$/.test((el.textContent || '').trim());
+                        });
+                    const actionY = actions.length
+                        ? Math.min(...actions.map(el => el.getBoundingClientRect().y)) : Infinity;
+                    const headings = Array.from(main.querySelectorAll('h1, h2'))
+                        .filter(el => {
+                            const r = el.getBoundingClientRect();
+                            return vis(el) && r.x < 800 && r.y >= 0 &&
+                                (actionY === Infinity || (r.y < actionY && actionY - r.y < 260));
+                        })
+                        .sort((a, b) => b.getBoundingClientRect().y - a.getBoundingClientRect().y);
+                    const heading = headings[0] || null;
+                    const hr = heading ? heading.getBoundingClientRect() : null;
+                    if (heading) out.name = heading.textContent.trim();
+                    const degRe = /(?:^|[\\u00b7\\s])(1st|2nd|3rd)\\+?(?=$|\\s)/;
                     // Degree badge sits next to the name (same row, left column).
                     if (hr) {
-                        for (const el of Array.from(main.querySelectorAll('span, div'))) {
-                            if (el.children.length) continue;
-                            const tx = (el.textContent || '').trim();
+                        const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT);
+                        while (walker.nextNode()) {
+                            const node = walker.currentNode;
+                            const tx = (node.nodeValue || '').trim();
+                            if (tx.length > 60) continue;
                             const mm = tx.match(degRe);
                             if (!mm) continue;
+                            const el = node.parentElement;
+                            if (!el || !vis(el)) continue;
                             const r = el.getBoundingClientRect();
                             if (Math.abs(r.y - hr.y) < 90 && r.x < 800) { out.degree = mm[1]; break; }
                         }
