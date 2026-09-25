@@ -183,7 +183,7 @@ for attempt in $(seq 1 30); do
 done
 [[ "$ready" -eq 1 ]]
 systemctl is-active --quiet linkbound-app.service
-"$release/.venv/bin/python" -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); assert c.execute("PRAGMA user_version").fetchone()[0] == 10' "$LINKBOUND_DATA_DIR/outbound.db"
+"$release/.venv/bin/python" -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); assert c.execute("PRAGMA user_version").fetchone()[0] == 11' "$LINKBOUND_DATA_DIR/outbound.db"
 
 mkdir -p /var/log/linkbound
 printf '%s commit=%s previous=%s snapshot=%s result=success\n' \

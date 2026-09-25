@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from app.egress import EgressError, ExitNodeController, parse_exit_nodes, _routed_through_tailscale
 from app.runner import LinkedInRunner
+from app.orchestrator import Orchestrator
 from app import db
 
 
@@ -78,6 +79,23 @@ def test_route_mismatch_clears_route_and_blocks_task():
     with pytest.raises(EgressError, match="route"):
         controller.begin("node-a")
     assert switched == ["node-a", ""]
+
+
+def test_failed_preflight_cleanup_retains_route_lease():
+    switched = []
+
+    def switch(node_id):
+        switched.append(node_id)
+        raise EgressError("switch failed after route change")
+
+    controller = ExitNodeController(
+        status=lambda: _status(), selected=lambda: "", switch=switch,
+        public_ip=lambda: "", routed=lambda: False,
+    )
+    with pytest.raises(EgressError, match="cleanup"):
+        controller.begin("node-a")
+    assert switched == ["node-a", ""]
+    assert controller.active_node == "node-a"
 
 
 def test_missing_public_ip_clears_route_and_blocks_task():
@@ -170,6 +188,28 @@ def test_offline_override_blocks_before_playwright(monkeypatch):
     assert launched == []
 
 
+def test_failed_cancel_cleanup_sets_shared_fault(monkeypatch):
+    launched = []
+
+    class FailedController:
+        def begin(self, _node_id):
+            raise EgressError("switch failed")
+
+        def end(self):
+            raise EgressError("cleanup failed")
+
+    monkeypatch.setattr("app.runner.ExitNodeController", FailedController)
+    monkeypatch.setattr("app.runner.async_playwright", lambda: launched.append(True))
+    settings = SimpleNamespace(browser=SimpleNamespace(), require_exit_node=True)
+    runner = LinkedInRunner(settings, "me")
+    runner.exit_node_id = "node-a"
+    with pytest.raises(EgressError, match="cleanup failed"):
+        asyncio.run(runner.start())
+    assert settings.egress_cleanup_fault == "cleanup failed"
+    assert runner._egress_controller is not None
+    assert launched == []
+
+
 def test_cancel_during_route_switch_waits_and_clears_before_return(monkeypatch):
     entered = threading.Event()
     release = threading.Event()
@@ -195,6 +235,11 @@ def test_cancel_during_route_switch_waits_and_clears_before_return(monkeypatch):
         task = asyncio.create_task(runner.start())
         assert await asyncio.to_thread(entered.wait, 1)
         task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()
         release.set()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -234,7 +279,7 @@ def test_runner_close_clears_active_route():
     assert closed == [True]
 
 
-def test_browser_close_failure_keeps_route_until_retry():
+def test_browser_close_failure_keeps_route_until_retry(monkeypatch):
     calls = []
 
     class Context:
@@ -250,8 +295,40 @@ def test_browser_close_failure_keeps_route_until_retry():
     with pytest.raises(EgressError, match="route was retained"):
         asyncio.run(runner.close())
     assert calls == ["browser"]
+    assert settings.egress_cleanup_fault
+    launched = []
+    monkeypatch.setattr("app.runner.async_playwright", lambda: launched.append(True))
+    another = LinkedInRunner(settings, "other-account")
+    another.exit_node_id = "node-b"
+    with pytest.raises(EgressError, match="cleanup failed"):
+        asyncio.run(another.start())
+    assert launched == []
     asyncio.run(runner.close())
     assert calls == ["browser", "browser", "route"]
+    assert settings.egress_cleanup_fault == ""
+
+
+def test_repeated_hard_stop_cannot_finish_before_browser_close():
+    async def run():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        class Runner:
+            async def close(self):
+                entered.set()
+                await release.wait()
+
+        task = asyncio.create_task(Orchestrator._close_runner_uninterruptibly(Runner()))
+        await entered.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        await task
+
+    asyncio.run(run())
 
 
 def test_failed_route_cleanup_remains_retryable():
@@ -288,7 +365,7 @@ def test_default_exit_node_survives_database_restart(tmp_path):
         db.close_db()
         db.init_db(path)
         assert db.get_default_exit_node_id() == "node-a"
-        assert db._conn().execute("PRAGMA user_version").fetchone()[0] == 10
+        assert db._conn().execute("PRAGMA user_version").fetchone()[0] == 11
     finally:
         db.close_db()
 
@@ -321,5 +398,26 @@ def test_batch_records_actual_egress_after_browser_preflight(tmp_path):
         assert batch["exit_node_id"] == "node-a"
         assert batch["exit_node_name"] == "home-laptop"
         assert batch["egress_ipv4"] == "198.51.100.42"
+    finally:
+        db.close_db()
+
+
+def test_v10_database_upgrades_node_name_columns(tmp_path):
+    db.close_db()
+    path = tmp_path / "upgrade.sqlite"
+    try:
+        db.init_db(path)
+        conn = db._conn()
+        conn.execute("ALTER TABLE batches DROP COLUMN exit_node_name")
+        conn.execute("ALTER TABLE sync_runs DROP COLUMN exit_node_name")
+        conn.execute("PRAGMA user_version = 10")
+        conn.commit()
+        db.close_db()
+        db.init_db(path)
+        assert db._conn().execute("PRAGMA user_version").fetchone()[0] == 11
+        for table in ("batches", "sync_runs"):
+            assert "exit_node_name" in {
+                row[1] for row in db._conn().execute(f"PRAGMA table_info({table})")
+            }
     finally:
         db.close_db()

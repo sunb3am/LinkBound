@@ -319,6 +319,26 @@ class Orchestrator:
         with contextlib.suppress(Exception):
             await runner.close()
 
+    @staticmethod
+    async def _close_runner_uninterruptibly(runner: LinkedInRunner) -> None:
+        """Keep the run busy until browser and route cleanup truly finish."""
+        close_task = asyncio.create_task(runner.close())
+        current = asyncio.current_task()
+        while True:
+            try:
+                await asyncio.shield(close_task)
+                return
+            except asyncio.CancelledError:
+                # Repeated hard stops must not release the coordinator while
+                # the prior Chrome process or exit-node lease is still live.
+                if current is not None:
+                    current.uncancel()
+                if close_task.done():
+                    if close_task.cancelled():
+                        raise EgressError("Browser cleanup was cancelled")
+                    close_task.result()
+                    return
+
     async def _wait_if_paused(self) -> None:
         while not self._pause_event.is_set():
             try:
@@ -574,7 +594,7 @@ class Orchestrator:
             close_error = None
             for _attempt in range(2):
                 try:
-                    await asyncio.shield(runner.close())
+                    await self._close_runner_uninterruptibly(runner)
                     close_error = None
                     break
                 except Exception as exc:

@@ -151,9 +151,15 @@ class ExitNodeController:
         except BaseException:
             try:
                 self.switch("")
-            finally:
-                self.active_node = ""
-                self.observation = None
+                if self.selected():
+                    raise EgressError("Exit-node route remained selected after failed preflight")
+            except BaseException as cleanup_exc:
+                # The first switch may have applied even when its CLI call failed.
+                # Retain a lease so callers can retry clearing it safely.
+                self.active_node = node_id
+                raise EgressError("Exit-node preflight cleanup failed; browser is blocked") from cleanup_exc
+            self.active_node = ""
+            self.observation = None
             raise
 
     def check(self) -> None:

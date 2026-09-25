@@ -36,6 +36,19 @@ from .templating import render
 CHAT_OVERLAY_SELECTOR = "div._34a12934"
 
 
+async def _await_uninterruptibly(task: asyncio.Task):
+    """Keep a cleanup task joined even if hard stop is requested again."""
+    current = asyncio.current_task()
+    while True:
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if current is not None:
+                current.uncancel()
+            if task.done():
+                return task.result()
+
+
 @dataclass
 class ProfileResult:
     status: ItemStatus
@@ -85,13 +98,16 @@ class LinkedInRunner:
                 # A hard stop must wait for the in-flight Tailscale command;
                 # cancelling to_thread does not stop its operating-system thread.
                 try:
-                    await begin_task
+                    await _await_uninterruptibly(begin_task)
                 except BaseException:
                     pass
                 try:
-                    await asyncio.to_thread(controller.end)
-                finally:
-                    self._egress_controller = None
+                    end_task = asyncio.create_task(asyncio.to_thread(controller.end))
+                    await _await_uninterruptibly(end_task)
+                except BaseException as cleanup_exc:
+                    self.settings.egress_cleanup_fault = str(cleanup_exc)
+                    raise EgressError("Exit-node preflight cleanup failed; browser is blocked") from cleanup_exc
+                self._egress_controller = None
                 raise
         try:
             await self._start_browser(accept_downloads, downloads_path)
@@ -175,12 +191,18 @@ class LinkedInRunner:
                         errors.append(exc)
             if errors:
                 # Keep the exit node selected if Chrome may still be alive.
+                self.settings.egress_cleanup_fault = "Browser close failed; exit-node route was retained"
                 raise EgressError("Browser close failed; exit-node route was retained") from errors[0]
             self._context = self._browser = self._page = self._pw = None
             controller = self._egress_controller
             if controller is not None:
-                await asyncio.to_thread(controller.end)
+                try:
+                    await asyncio.to_thread(controller.end)
+                except Exception as exc:
+                    self.settings.egress_cleanup_fault = str(exc)
+                    raise
                 self._egress_controller = None
+                self.settings.egress_cleanup_fault = ""
 
     async def _watch_egress(self, *, interval_seconds: float = 3) -> None:
         while True:

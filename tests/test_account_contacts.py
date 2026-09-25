@@ -189,7 +189,7 @@ def test_versioned_backfill_skips_ambiguous_legacy_attribution(tmp_path):
     assert db.is_already_contacted("https://linkedin.com/in/c", set(), "new-account")
     legacy = next(row for row in db.list_contacts("one") if row["linkedin_url"] == "https://linkedin.com/in/c")
     assert legacy["full_name"] == "Legacy WWW Person"
-    assert db._conn().execute("PRAGMA user_version").fetchone()[0] == 10
+    assert db._conn().execute("PRAGMA user_version").fetchone()[0] == 11
     db.close_db()
 
 

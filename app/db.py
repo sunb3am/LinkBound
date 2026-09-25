@@ -213,6 +213,7 @@ def init_db(db_path: Path) -> None:
             _migrate_inbox_open_intents(_CONN)
             _migrate_operator_identity(_CONN)
             _migrate_exit_node_settings(_CONN)
+            _migrate_exit_node_names(_CONN)
             _CONN.execute("CREATE INDEX IF NOT EXISTS idx_requests_normalized_status ON outbound_requests(normalized_linkedin_url, status)")
             _CONN.execute("CREATE INDEX IF NOT EXISTS idx_contacts_normalized_url ON contacts(normalized_linkedin_url)")
             _CONN.commit()
@@ -514,12 +515,19 @@ def _migrate_exit_node_settings(conn: sqlite3.Connection) -> None:
         updated_at TEXT NOT NULL
     )""")
     _ensure_column(conn, "batches", "exit_node_id", "exit_node_id TEXT")
-    _ensure_column(conn, "batches", "exit_node_name", "exit_node_name TEXT")
     _ensure_column(conn, "batches", "egress_ipv4", "egress_ipv4 TEXT")
     _ensure_column(conn, "sync_runs", "exit_node_id", "exit_node_id TEXT")
-    _ensure_column(conn, "sync_runs", "exit_node_name", "exit_node_name TEXT")
     _ensure_column(conn, "sync_runs", "egress_ipv4", "egress_ipv4 TEXT")
     conn.execute("PRAGMA user_version = 10")
+
+
+def _migrate_exit_node_names(conn: sqlite3.Connection) -> None:
+    """Version 11 adds the observed device label to route audit records."""
+    if int(conn.execute("PRAGMA user_version").fetchone()[0]) >= 11:
+        return
+    _ensure_column(conn, "batches", "exit_node_name", "exit_node_name TEXT")
+    _ensure_column(conn, "sync_runs", "exit_node_name", "exit_node_name TEXT")
+    conn.execute("PRAGMA user_version = 11")
 
 
 def get_default_exit_node_id() -> str:

@@ -165,7 +165,7 @@ function gotoView(viewName, { persist = true } = {}) {
 
   if (viewName === "templates") loadTemplates();
   if (viewName === "crm")       loadHistory();
-  if (viewName === "inbox")     loadInbox();
+  if (viewName === "inbox")     loadExitNodes().then(loadInbox);
   if (viewName === "batches")   loadBatches();
   if (viewName === "scheduled") loadExitNodes().then(loadScheduledCampaigns);
   if (viewName === "analytics") loadAnalytics();
@@ -1310,8 +1310,12 @@ function renderInboxSync(runs) {
   const coverage = $("#inboxSyncCoverage");
   const schedule = state.config?.inbound_schedule;
   const operator = $("#operator").value;
+  const defaultNode = state.egress?.nodes.find(node => node.id === state.egress.default_node_id);
+  const routeBlocked = state.egress?.required && !defaultNode?.online;
   $("#inboxSyncNote").textContent = schedule?.enabled && schedule.operator === operator
-    ? `A no-send browser scan runs daily at ${schedule.time_local} (${schedule.timezone}). It inspects changed visible conversations in bounded batches. Coverage remains partial until the backfill is complete.`
+    ? routeBlocked
+      ? "Daily inbox sync is paused until an online default exit node is selected in Settings."
+      : `A no-send browser scan runs daily at ${schedule.time_local} (${schedule.timezone}). It inspects changed visible conversations in bounded batches. Coverage remains partial until the backfill is complete.`
     : "Daily browser scanning is off for this session. Saved observations remain available here.";
   if (!runs.length) {
     summary.innerHTML = `<strong>No inbox sync recorded yet.</strong><span>Run history will appear here after the first scan.</span>`;
