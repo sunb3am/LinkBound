@@ -125,7 +125,9 @@ class ExitNodeController:
                 self.switch("")
                 if self.selected():
                     raise EgressError("Previous exit-node route could not be cleared")
-            self.switch(node_id)
+            # The local CLI accepts an exit node's Tailscale IP or hostname;
+            # the stable node ID is for policy state and run provenance.
+            self.switch(node["ip"] or node["name"])
             # `tailscale set` normally applies immediately. Allow a short status lag.
             for attempt in range(3):
                 status = self.status()

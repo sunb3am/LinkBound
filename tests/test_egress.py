@@ -39,6 +39,25 @@ def test_inventory_excludes_non_exit_nodes():
     ]
 
 
+def test_tailscale_switch_uses_peer_ip_while_audit_keeps_node_id():
+    selected = [""]
+    switches = []
+
+    def switch(identifier):
+        switches.append(identifier)
+        selected[0] = "node-a" if identifier == "100.101.102.103" else ""
+
+    controller = ExitNodeController(
+        status=lambda: _status(selected=selected[0] == "node-a"),
+        selected=lambda: selected[0], switch=switch,
+        public_ip=lambda: "198.51.100.42", routed=lambda: True,
+    )
+    observation = controller.begin("node-a")
+    assert switches[0] == "100.101.102.103"
+    assert observation["node_id"] == "node-a"
+    controller.end()
+
+
 def test_offline_node_never_switches():
     switched = []
     controller = ExitNodeController(
@@ -55,8 +74,8 @@ def test_offline_node_never_switches():
 def test_selected_node_and_public_ip_are_verified():
     switched = []
     controller = ExitNodeController(
-        status=lambda: _status(selected=bool(switched and switched[-1] == "node-a")),
-        selected=lambda: switched[-1] if switched else "",
+        status=lambda: _status(selected=bool(switched and switched[-1] == "100.101.102.103")),
+        selected=lambda: "node-a" if switched and switched[-1] == "100.101.102.103" else "",
         switch=switched.append,
         public_ip=lambda: "198.51.100.42",
         routed=lambda: True,
@@ -64,7 +83,7 @@ def test_selected_node_and_public_ip_are_verified():
     observation = controller.begin("node-a")
     assert observation == {"node_id": "node-a", "node_name": "home-laptop", "public_ip": "198.51.100.42"}
     controller.end()
-    assert switched == ["node-a", ""]
+    assert switched == ["100.101.102.103", ""]
 
 
 def test_route_mismatch_clears_route_and_blocks_task():
@@ -78,7 +97,7 @@ def test_route_mismatch_clears_route_and_blocks_task():
     )
     with pytest.raises(EgressError, match="route"):
         controller.begin("node-a")
-    assert switched == ["node-a", ""]
+    assert switched == ["100.101.102.103", ""]
 
 
 def test_failed_preflight_cleanup_retains_route_lease():
@@ -94,7 +113,7 @@ def test_failed_preflight_cleanup_retains_route_lease():
     )
     with pytest.raises(EgressError, match="cleanup"):
         controller.begin("node-a")
-    assert switched == ["node-a", ""]
+    assert switched == ["100.101.102.103", ""]
     assert controller.active_node == "node-a"
 
 
@@ -102,28 +121,28 @@ def test_missing_public_ip_clears_route_and_blocks_task():
     switched = []
     controller = ExitNodeController(
         status=lambda: _status(selected=True),
-        selected=lambda: switched[-1] if switched else "",
+        selected=lambda: "node-a" if switched and switched[-1] == "100.101.102.103" else "",
         switch=switched.append,
         public_ip=lambda: "",
         routed=lambda: True,
     )
     with pytest.raises(EgressError, match="public IP"):
         controller.begin("node-a")
-    assert switched == ["node-a", ""]
+    assert switched == ["100.101.102.103", ""]
 
 
 def test_system_route_must_use_tailscale_interface():
     switched = []
     controller = ExitNodeController(
         status=lambda: _status(selected=True),
-        selected=lambda: switched[-1] if switched else "",
+        selected=lambda: "node-a" if switched and switched[-1] == "100.101.102.103" else "",
         switch=switched.append,
         public_ip=lambda: "198.51.100.42",
         routed=lambda: False,
     )
     with pytest.raises(EgressError, match="route"):
         controller.begin("node-a")
-    assert switched == ["node-a", ""]
+    assert switched == ["100.101.102.103", ""]
 
 
 def test_existing_route_is_cleared_before_new_browser_lease():
@@ -132,7 +151,7 @@ def test_existing_route_is_cleared_before_new_browser_lease():
 
     def switch(node_id):
         switched.append(node_id)
-        current[0] = node_id
+        current[0] = "node-a" if node_id == "100.101.102.103" else ""
 
     controller = ExitNodeController(
         status=lambda: _status(selected=current[0] == "node-a"),
@@ -140,7 +159,7 @@ def test_existing_route_is_cleared_before_new_browser_lease():
         public_ip=lambda: "198.51.100.42", routed=lambda: True,
     )
     controller.begin("node-a")
-    assert switched[:2] == ["", "node-a"]
+    assert switched[:2] == ["", "100.101.102.103"]
 
 
 def test_ipv6_direct_route_is_not_accepted(monkeypatch):
