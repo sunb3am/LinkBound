@@ -51,7 +51,6 @@ their separate account-identity and send regression gates still apply.
 The initial automatic approval review rejected pushing this private branch
 until the user explicitly authorized the destination and payload. The user
 granted that approval on 2026-09-25. Branch
-`codex/linkbound-exit-node-selection` was then pushed to the configured
-GitHub remote at documentation commit `d873445`; the local tracking ref
-matches that commit. The Linode still runs code commit `41ee9ae`, since
-`d873445` only added this deployment record.
+`codex/linkbound-exit-node-selection` is published to the configured GitHub
+remote. The Linode runs code commit `41ee9ae`; later branch commits only
+update this deployment record.
