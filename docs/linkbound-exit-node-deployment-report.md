@@ -39,18 +39,35 @@ contacted or changed.
   idle and the Chrome process count was 0.
 - Hosted live sends and the daily inbound schedule remained disabled.
 
-## Remaining live check
+## Sunbeam pilot, 2026-09-25
 
-After an owner laptop is advertised and approved as an exit node, select it
-as LinkBound's default. Run a no-send route pilot to confirm the observed
-public IP, IPv4 and IPv6 routes, private app/viewer/SSH reachability, Chrome
-login state, and behavior when the node becomes unavailable. Do not enable
-the paused daily inbox job or hosted sends merely because the route works;
-their separate account-identity and send regression gates still apply.
+The owner advertised and approved `sunbeam` (`100.71.193.94`), and LinkBound
+reported it as an online selectable exit node. Sunbeam's stable node ID was
+saved as the default. The first benign route attempt revealed that this
+Tailscale CLI accepts an exit node IP or hostname, not its node ID. Commit
+`05a2a73` fixed that selector and passed 163 tests. Its deployment created
+and verified snapshot
+`/var/lib/linkbound/backups/pre-deploy-05a2a73-20260925T101451Z`.
+
+With that release, a benign route check selected Sunbeam and observed public
+IPv4 different from the Linode's `50.116.8.251`. The controller also passed
+its IPv4 and IPv6 route checks, the private app and viewer returned HTTP 200,
+and clearing the route succeeded. A browser-only dry run against the sender's
+bound profile finished as batch 7 with `dry_run=1`, `sent=0`, `skipped=1`, and
+no failed or flagged items. Its one item was `connect_unavailable`, consistent
+with using the sender's own profile; no invitation or message was sent. The batch
+recorded Sunbeam and a public IP different from the Linode's. Afterwards,
+Tailscale had no selected exit node, the Chrome process count was 0, the app
+was idle, and the app and viewer returned HTTP 200.
+
+A read-only name-resolution call returned HTTP 200 but `updated=0`. It is not
+evidence that the profile name collector succeeded. A forced exit-node outage
+was not tested. The daily inbox job and hosted live sends remain disabled
+until their separate account-identity and send regression checks pass.
 
 The initial automatic approval review rejected pushing this private branch
 until the user explicitly authorized the destination and payload. The user
 granted that approval on 2026-09-25. Branch
 `codex/linkbound-exit-node-selection` is published to the configured GitHub
-remote. The Linode runs code commit `41ee9ae`; later branch commits only
+remote. The Linode runs code commit `05a2a73`; later branch commits only
 update this deployment record.
