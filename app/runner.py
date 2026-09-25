@@ -172,6 +172,10 @@ class LinkedInRunner:
         return not self._on_auth_wall(page.url)
 
     async def close(self) -> None:
+        cleanup_task = asyncio.create_task(self._close_impl())
+        await _await_uninterruptibly(cleanup_task)
+
+    async def _close_impl(self) -> None:
         async with self._close_lock:
             watchdog = self._egress_watchdog_task
             self._egress_watchdog_task = None

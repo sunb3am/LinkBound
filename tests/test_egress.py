@@ -331,6 +331,67 @@ def test_repeated_hard_stop_cannot_finish_before_browser_close():
     asyncio.run(run())
 
 
+def test_cancelled_inbound_close_waits_for_route_cleanup():
+    entered = threading.Event()
+    release = threading.Event()
+    cleared = threading.Event()
+
+    class SlowController:
+        def end(self):
+            entered.set()
+            assert release.wait(2)
+            cleared.set()
+
+    settings = SimpleNamespace(browser=SimpleNamespace(), require_exit_node=True)
+    runner = LinkedInRunner(settings, "me")
+    runner._egress_controller = SlowController()
+
+    async def run():
+        task = asyncio.create_task(runner.close())
+        assert await asyncio.to_thread(entered.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        release.set()
+        await task
+
+    asyncio.run(run())
+    assert cleared.is_set()
+
+
+def test_cancelled_browser_close_keeps_route_until_chrome_exits():
+    async def run():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        calls = []
+
+        class Context:
+            async def close(self):
+                entered.set()
+                await release.wait()
+                calls.append("browser")
+
+        settings = SimpleNamespace(browser=SimpleNamespace(), require_exit_node=True)
+        runner = LinkedInRunner(settings, "me")
+        runner._context = Context()
+        runner._egress_controller = SimpleNamespace(end=lambda: calls.append("route"))
+        task = asyncio.create_task(runner.close())
+        await entered.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert calls == []
+        release.set()
+        await task
+        assert calls == ["browser", "route"]
+
+    asyncio.run(run())
+
+
 def test_failed_route_cleanup_remains_retryable():
     calls = []
     current = ["node-a"]
