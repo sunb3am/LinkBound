@@ -21,7 +21,7 @@ class FakeOrchestrator:
         self.operator = operator
         self.busy = True
 
-    async def resolve_names(self, jobs, operator, *, mode, gemini):
+    async def resolve_names(self, jobs, operator, *, mode, gemini, exit_node_id=""):
         self.operator = operator
         self.busy = True
         try:

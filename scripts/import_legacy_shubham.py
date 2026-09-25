@@ -215,8 +215,8 @@ def import_bundle(bundle_path: Path, target_db: Path, screenshots_dir: Path,
         with closing(_open_readonly(source_path)) as source, closing(target_connection) as target:
             target.row_factory = sqlite3.Row
             target.execute("PRAGMA foreign_keys=ON")
-            if target.execute("PRAGMA user_version").fetchone()[0] != 9:
-                raise ValueError("Hosted database must use schema 9")
+            if target.execute("PRAGMA user_version").fetchone()[0] != 10:
+                raise ValueError("Hosted database must use schema 10")
             owner = target.execute(
                 "SELECT linkedin_self_url FROM operators WHERE key=?", (ACCOUNT,)
             ).fetchone()

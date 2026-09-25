@@ -130,6 +130,10 @@ if [[ "$was_active" -eq 1 ]]; then
   systemctl stop linkbound-app.service
 fi
 stopped=1
+# Give the existing non-root service user control of this machine's local
+# Tailscale preference. This does not change any tailnet policy or other node.
+tailscale set --operator=linkbound
+sudo -u linkbound tailscale status --json >/dev/null
 snapshot="none"
 if [[ -f "$LINKBOUND_DATA_DIR/outbound.db" ]]; then
   mkdir -p /var/lib/linkbound/backups
@@ -172,7 +176,7 @@ for attempt in $(seq 1 30); do
 done
 [[ "$ready" -eq 1 ]]
 systemctl is-active --quiet linkbound-app.service
-"$release/.venv/bin/python" -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); assert c.execute("PRAGMA user_version").fetchone()[0] == 9' "$LINKBOUND_DATA_DIR/outbound.db"
+"$release/.venv/bin/python" -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); assert c.execute("PRAGMA user_version").fetchone()[0] == 10' "$LINKBOUND_DATA_DIR/outbound.db"
 
 mkdir -p /var/log/linkbound
 printf '%s commit=%s previous=%s snapshot=%s result=success\n' \

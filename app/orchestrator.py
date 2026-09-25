@@ -27,6 +27,7 @@ from .names import slug_from_url, split_full_name
 from .runner import LinkedInRunner, ProfileResult
 from .safety import SafetyGovernor, remaining_queue_budget
 from .linkedin_guard import LinkedInAccountStop
+from .egress import EgressError
 from .settings import Settings
 from .templating import referenced_variables, render
 
@@ -55,6 +56,8 @@ class Orchestrator:
         self.ai_personalize: bool = False
         self.ai_voice: str = "auto"
         self.webhook_url: str = ""
+        self.exit_node_id: str = ""
+        self.egress_observation: dict | None = None
         self.gemini = None  # set by main after construction
         self.message: str = ""
 
@@ -110,6 +113,7 @@ class Orchestrator:
             "dry_run": self.dry_run,
             "ai_personalize": self.ai_personalize,
             "message": self.message,
+            "egress": self.egress_observation,
             "totals": dict(self.totals),
             "current": dict(self.current),
         }
@@ -127,7 +131,8 @@ class Orchestrator:
 
     # ---- name resolution pre-pass ----------------------------------------
 
-    async def resolve_names(self, jobs: list[dict], operator: str, *, mode: str, gemini) -> list[dict]:
+    async def resolve_names(self, jobs: list[dict], operator: str, *, mode: str, gemini,
+                            exit_node_id: str = "") -> list[dict]:
         """Fill accurate names into jobs (in place) and return updated row views.
 
         mode="page": visit each profile with the operator's session and read the
@@ -156,6 +161,7 @@ class Orchestrator:
                     self._broadcast({"type": "resolve_progress", "done": i + 1, "total": len(targets)})
             else:
                 runner = LinkedInRunner(self.settings, operator)
+                runner.exit_node_id = exit_node_id
                 try:
                     await runner.start()
                     await runner.open_feed()
@@ -234,6 +240,7 @@ class Orchestrator:
         webhook_url: str = "",
         custom_gemini_key: str | None = None,
         custom_gemini_model: str | None = None,
+        exit_node_id: str = "",
     ) -> None:
         if self.is_busy():
             raise RuntimeError("A run is already in progress.")
@@ -245,6 +252,8 @@ class Orchestrator:
         self.webhook_url = webhook_url
         self.custom_gemini_key = custom_gemini_key
         self.custom_gemini_model = custom_gemini_model
+        self.exit_node_id = exit_node_id
+        self.egress_observation = None
         self._stop_requested = False
         self._hard_stop = False
         self._pause_event.set()
@@ -325,12 +334,20 @@ class Orchestrator:
     async def _run(self, jobs: list[dict], *, action: str, dry_run: bool, send_on_mismatch: bool) -> None:
         governor = SafetyGovernor(self.settings.safety, self.operator)
         runner = LinkedInRunner(self.settings, self.operator)
+        runner.exit_node_id = self.exit_node_id
         self._runner = runner
         behavior = self.settings.behavior
 
         try:
             self._emit_state("Opening browser...")
             await runner.start()
+            self.egress_observation = getattr(runner, "egress_observation", None)
+            if self.egress_observation and self.batch_id is not None:
+                db.record_batch_egress(
+                    self.batch_id, self.egress_observation["node_id"],
+                    self.egress_observation["public_ip"],
+                )
+                self._emit_state("Exit-node route verified. Opening LinkedIn...")
             await runner.open_feed()
 
             if not await runner.logged_in_now():
@@ -535,7 +552,7 @@ class Orchestrator:
                 with contextlib.suppress(Exception):
                     db.set_campaign_status(
                         campaign_id, "paused",
-                        str(exc) if isinstance(exc, LinkedInAccountStop) else "Browser run failed",
+                        str(exc) if isinstance(exc, (LinkedInAccountStop, EgressError)) else "Browser run failed",
                     )
             if self.batch_id:
                 with contextlib.suppress(Exception):

@@ -14,7 +14,8 @@ account mapping, and queue stop controls are completed.
   and future `attachments` below the same data directory. Chrome profiles stay
   in `/var/lib/linkbound/profiles/<sender>` and are owned by `linkbound`.
 - Configuration: `/etc/linkbound/app.env`, owned by root, group `linkbound`, mode
-  0640. Set `LINKBOUND_REQUIRE_TAILSCALE_AUTH=true` and
+  0640. Set `LINKBOUND_REQUIRE_TAILSCALE_AUTH=true`,
+  `LINKBOUND_REQUIRE_EXIT_NODE=true`, and
   `LINKBOUND_ALLOW_TAILNET_DEVICES=true` to make tailnet reachability the web
   access decision. Retain `LINKBOUND_ALLOW_LIVE_SENDS=false` during the guarded
   pilot. Set `LINKBOUND_PILOT_DAILY_CAP=5` and
@@ -44,15 +45,41 @@ separate:
 {
   "src": ["autogroup:member", "autogroup:tagged"],
   "dst": ["100.103.144.62"],
-  "ip": ["tcp:443", "tcp:8443"]
+  "ip": ["*"]
 }
 ```
 
-An optional exit node for the Linode needs `autogroup:internet` in a
-  restrictive custom policy. The [default allow-all policy](https://tailscale.com/docs/features/exit-nodes)
-  permits approved exit
-nodes without that extra grant. Granting access to an exit device's IP is not
-the same as permitting internet routing through it.
+The current custom policy also grants only LinkBound outbound exit-node use:
+
+```json
+{"src": ["100.103.144.62"], "dst": ["autogroup:internet"], "ip": ["*"]}
+```
+
+These two grants leave the separate agent VPS grant and SSH rule unchanged.
+Granting access to an exit device's IP is not the same as permitting internet
+routing through it. The app still needs an approved exit node and a saved
+default in Settings before any hosted LinkedIn browser task can start.
+
+## Exit-node operation
+
+1. Advertise each laptop or phone as an exit node in its Tailscale client and
+   approve it on the Machines page. Keep at least the default device online.
+2. In LinkBound Settings, save an online default. Unattended inbox sync and
+   tasks without an override use it. A manual run or queued campaign can pin
+   another approved device. Scheduled campaigns can change their route between
+   chunks from the Scheduled view.
+3. The deploy script grants the existing `linkbound` Unix service account
+   permission to operate Tailscale on this LinkBound machine only. The app
+   retains `NoNewPrivileges=true` and does not edit the tailnet policy.
+4. Before Chrome starts, the runner checks the chosen node is online,
+   selects it, confirms Tailscale's route and an observed public IPv4, then
+   records the node and address with the batch or sync. It clears the route
+   after Chrome closes. If any check fails, it blocks the browser task.
+
+Changing the exit node affects all non-tailnet traffic from LinkBound during
+that browser task. It does not change the other VPS. A real laptop pilot must
+verify the selected route, app, viewer, and SSH before scheduled inbox sync or
+hosted sends are enabled.
 
 Before the first hosted send and after browser upgrades, record the real OS,
 timezone, locale, Chrome and Playwright versions, display, public egress IP,

@@ -32,7 +32,7 @@ def test_schema_v3_and_campaign_targets_survive_reopen(queue_db):
 
     db.init_db(queue_db)
     target_after = db.list_campaign_targets(campaign_id)[0]
-    assert int(db._conn().execute("PRAGMA user_version").fetchone()[0]) == 9
+    assert int(db._conn().execute("PRAGMA user_version").fetchone()[0]) == 10
     assert target_after["state"] == "queued"
     assert target_after["normalized_linkedin_url"] == "https://linkedin.com/in/ada"
     assert target_after["job"] == target_before["job"] == {

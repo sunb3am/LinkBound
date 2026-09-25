@@ -31,6 +31,15 @@ def _operator_exists(conn, operator: str) -> bool:
     return conn.execute("SELECT 1 FROM operators WHERE key=?", (operator,)).fetchone() is not None
 
 
+def record_sync_egress(run_id: int, node_id: str, ipv4: str) -> None:
+    with db._LOCK:
+        db._conn().execute(
+            "UPDATE sync_runs SET exit_node_id=?, egress_ipv4=? WHERE id=?",
+            (node_id, ipv4, run_id),
+        )
+        db._conn().commit()
+
+
 def start_sync_run(operator: str, *, expected_sections: tuple[str, ...], mode: str = "inventory") -> int:
     if mode not in {"inventory", "full"}:
         raise ValueError("Unknown sync mode")

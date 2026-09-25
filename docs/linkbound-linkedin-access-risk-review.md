@@ -54,7 +54,15 @@ account restrictions.
 
 ## Risk controls and remaining checks
 
-### Optional Tailscale exit node for hosted egress
+### Tailscale exit node for hosted egress
+
+Update 2026-09-24: the operator chose an exit node as a required preflight for
+hosted LinkedIn browser work. LinkBound now has a saved default, task-level
+selection, and a fail-closed route check before Chrome starts. These controls
+are implemented on the exit-node selection branch but need a live laptop pilot
+before the feature or paused sync is treated as verified in production. The
+selection is not an assurance against LinkedIn challenges, and repeated IP
+changes are not an automatic mitigation.
 
 On 2026-09-23, the Linode's Tailscale status showed no approved exit node and
 the Linode was using its own internet route. Tailscale can route the Linode's

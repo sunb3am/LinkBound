@@ -23,7 +23,9 @@ from playwright.async_api import (
     async_playwright,
 )
 
+from . import db
 from .decision import PageState, decide_action
+from .egress import EgressError, ExitNodeController
 from .linkedin_guard import LinkedInAccountStop, inspect_page
 from .models import ActionType, ItemStatus, NOTE_LIMITED_ACTIONS
 from .names import split_full_name
@@ -56,11 +58,29 @@ class LinkedInRunner:
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
+        self.exit_node_id: str = ""
+        self.egress_observation: dict | None = None
+        self._egress_controller: ExitNodeController | None = None
 
     # ---- lifecycle --------------------------------------------------------
 
     async def start(self, *, accept_downloads: bool | None = None,
                     downloads_path: str | None = None) -> None:
+        if getattr(self.settings, "require_exit_node", False):
+            node_id = self.exit_node_id or db.get_default_exit_node_id()
+            if not node_id:
+                raise EgressError("Select an exit node before LinkedIn browser work")
+            controller = ExitNodeController()
+            self.egress_observation = await asyncio.to_thread(controller.begin, node_id)
+            self._egress_controller = controller
+        try:
+            await self._start_browser(accept_downloads, downloads_path)
+        except BaseException:
+            await self.close()
+            raise
+
+    async def _start_browser(self, accept_downloads: bool | None,
+                             downloads_path: str | None) -> None:
         self._pw = await async_playwright().start()
 
         if self.browser_cfg.cdp_url:
@@ -98,6 +118,7 @@ class LinkedInRunner:
         )
 
     async def open_feed(self) -> None:
+        await self.verify_egress()
         page = self._require_page()
         response = await page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded")
         await page.wait_for_timeout(2500)
@@ -116,11 +137,24 @@ class LinkedInRunner:
             if self._context is not None:
                 await self._context.close()
         finally:
-            if self._browser is not None:
-                await self._browser.close()
-            if self._pw is not None:
-                await self._pw.stop()
-            self._context = self._browser = self._page = self._pw = None
+            try:
+                if self._browser is not None:
+                    await self._browser.close()
+                if self._pw is not None:
+                    await self._pw.stop()
+            finally:
+                self._context = self._browser = self._page = self._pw = None
+                controller = self._egress_controller
+                self._egress_controller = None
+                if controller is not None:
+                    await asyncio.to_thread(controller.end)
+
+    async def verify_egress(self) -> None:
+        if not getattr(getattr(self, "settings", None), "require_exit_node", False):
+            return
+        if self._egress_controller is None:
+            raise EgressError("No verified exit-node route is active")
+        await asyncio.to_thread(self._egress_controller.check)
 
     def _require_page(self) -> Page:
         if self._page is None:
@@ -145,6 +179,7 @@ class LinkedInRunner:
         custom_gemini_key: str | None = None,
         custom_gemini_model: str | None = None,
     ) -> ProfileResult:
+        await self.verify_egress()
         page = self._require_page()
         url = job["linkedin_url"]
         company = (job.get("company") or "").strip()
@@ -460,6 +495,7 @@ class LinkedInRunner:
         """Read-only visit: navigate to a profile and return its detected identity
         (name, headline, degree, location). Used by the 'Resolve names' pre-pass.
         Performs NO actions and sends nothing."""
+        await self.verify_egress()
         page = self._require_page()
         out = {"url": url, "name": "", "headline": "", "degree": "", "location": "", "ok": False}
         try:

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -30,6 +31,7 @@ def test_worker_never_starts_on_no_send_host_and_runs_one_chunk_per_local_day(tm
                  "available_at_utc": "2026-09-23T09:00:00+00:00" if i < 2 else "2026-09-24T09:00:00+00:00"}
                 for i in range(3)
             ],
+            run_options_json=json.dumps({"exit_node_id": "node-a"}),
         )
         manager = FakeManager()
         settings = SimpleNamespace(allow_live_sends=False, safety=SimpleNamespace(
@@ -43,6 +45,7 @@ def test_worker_never_starts_on_no_send_host_and_runs_one_chunk_per_local_day(tm
         assert len(manager.calls) == 1
         assert len(manager.calls[0][1]) == 2
         assert all(job["campaign_id"] == campaign_id for job in manager.calls[0][1])
+        assert manager.calls[0][2]["exit_node_id"] == "node-a"
         assert not asyncio.run(run_due_once(manager, settings, today))
         # The fake manager does not run a browser, so emulate those two terminal outcomes.
         with db._LOCK:

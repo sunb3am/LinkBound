@@ -14,14 +14,15 @@ def database(tmp_path):
     db.close_db()
 
 
-def test_fresh_database_has_inbound_schema_v9(database):
+def test_fresh_database_has_inbound_schema_v10(database):
     conn = db._conn()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
 
     expected = {
         "sync_runs": {
             "id", "operator", "mode", "status", "started_at", "finished_at",
             "expected_sections_json", "coverage_json", "error",
+            "exit_node_id", "egress_ipv4",
         },
         "conversations": {
             "id", "operator", "thread_key", "contact_url", "participant_name",
@@ -106,7 +107,7 @@ def test_v5_upgrade_preserves_data_and_is_idempotent(database):
 
     db.init_db(database)
     conn = db._conn()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
     assert tuple(conn.execute(
         "SELECT public_id, operator, status FROM batches"
     ).fetchone()) == ("B-1", "operator-a", "complete")
@@ -124,7 +125,7 @@ def test_v5_upgrade_preserves_data_and_is_idempotent(database):
         "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
     ).fetchall()]
     assert schema_after == schema_before
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
 
 
 def test_operator_with_inbound_history_cannot_be_deleted(database):

@@ -64,11 +64,13 @@ class RunCoordinator:
         await orch.start(jobs, operator, **kwargs)
         return orch
 
-    async def resolve_names(self, operator: str, jobs: list[dict], *, mode: str) -> list[dict]:
+    async def resolve_names(self, operator: str, jobs: list[dict], *, mode: str,
+                            exit_node_id: str = "") -> list[dict]:
         if self.active() is not None:
             raise RuntimeError("A browser operation is already in progress.")
         return await self.get(operator).resolve_names(
-            jobs, operator, mode=mode, gemini=self.gemini
+            jobs, operator, mode=mode, gemini=self.gemini,
+            exit_node_id=exit_node_id,
         )
 
     def subscribe(self) -> asyncio.Queue:

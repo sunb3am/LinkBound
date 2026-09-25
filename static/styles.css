@@ -1507,3 +1507,51 @@ tr:hover td { background: rgba(0,0,0,0.015); }
   .inbox-link-form { width: 100%; }
   .inbox-link-form input { min-width: 0; width: 100%; }
 }
+/* Exit-node controls stay beside the browser action they govern. */
+.egress-choice {
+  padding: 16px 18px;
+  margin: 0 0 24px;
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--accent-green);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+.egress-choice.blocked { border-left-color: var(--accent-coral); }
+.egress-choice.blocked p { color: var(--accent-coral); }
+.egress-choice label,
+.egress-settings label,
+.queue-route label {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.egress-choice select,
+.egress-settings select,
+.queue-route select {
+  width: 100%;
+  max-width: 400px;
+}
+.egress-choice p,
+.egress-status {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+}
+.egress-settings .btn { margin-top: 14px; }
+.run-egress-actual {
+  margin-top: 14px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+.queue-route {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  padding: 10px 0;
+}
+.queue-route label { margin: 0; }
+.queue-route select { min-width: 220px; }
+@media (max-width: 720px) {
+  .queue-route { align-items: stretch; flex-direction: column; }
+  .queue-route select { min-width: 0; }
+}

@@ -9,6 +9,7 @@ const state = {
   operator: null,
   activeView: "campaigns",
   config: null,
+  egress: null,
   inputMode: "csv",
   templates: [],
   selectedTemplateId: null,
@@ -166,9 +167,9 @@ function gotoView(viewName, { persist = true } = {}) {
   if (viewName === "crm")       loadHistory();
   if (viewName === "inbox")     loadInbox();
   if (viewName === "batches")   loadBatches();
-  if (viewName === "scheduled") loadScheduledCampaigns();
+  if (viewName === "scheduled") loadExitNodes().then(loadScheduledCampaigns);
   if (viewName === "analytics") loadAnalytics();
-  if (viewName === "settings")  loadOperators();
+  if (viewName === "settings")  { loadOperators(); loadExitNodes(); }
   if (viewName === "run")       refreshRunStatus();
 
   // Re-attach tooltips for dynamically added elements
@@ -232,6 +233,87 @@ async function loadConfig() {
     if (locModel) $("#customGeminiModel").value = locModel;
   }
 }
+
+function exitNodeOptions(selectedId = "", includeDefault = true) {
+  const data = state.egress || { nodes: [], default_node_id: "" };
+  const defaultNode = data.nodes.find(node => node.id === data.default_node_id);
+  const defaultLabel = defaultNode ? defaultNode.name : "No default selected";
+  const choices = includeDefault
+    ? [`<option value="" ${selectedId ? "" : "selected"}>Use default: ${esc(defaultLabel)}</option>`]
+    : [`<option value="" ${selectedId ? "" : "selected"}>No default: block browser work</option>`];
+  for (const node of data.nodes) {
+    const label = `${node.name}${node.online ? "" : " (offline)"}`;
+    choices.push(`<option value="${esc(node.id)}" ${node.id === selectedId ? "selected" : ""} ${node.online ? "" : "disabled"}>${esc(label)}</option>`);
+  }
+  return choices.join("");
+}
+
+function selectedExitNode(selectId) {
+  if (!state.egress?.required) return null;
+  const nodeId = $(selectId).value || state.egress.default_node_id;
+  return state.egress.nodes.find(node => node.id === nodeId) || null;
+}
+
+function updateRunEgressStatus() {
+  if (!state.egress?.required) return;
+  const node = selectedExitNode("#runExitNode");
+  const ready = !!node?.online;
+  $("#runEgressChoice").classList.toggle("blocked", !ready);
+  $("#runEgressStatus").textContent = ready
+    ? `This run will use ${node.name}. The route is checked before Chrome opens.`
+    : "Choose an online exit node before starting. LinkedIn browser work is blocked.";
+  $("#btnLaunch").disabled = !ready;
+  const queueNode = selectedExitNode("#queueExitNode");
+  $("#queueEgressHint").textContent = queueNode?.online
+    ? `Future chunks will use ${queueNode.name}. You can change this later in Scheduled.`
+    : "Future chunks will pause until an online exit node is selected.";
+}
+
+$("#runExitNode").addEventListener("change", updateRunEgressStatus);
+$("#queueExitNode").addEventListener("change", updateRunEgressStatus);
+
+async function loadExitNodes() {
+  try {
+    state.egress = await api("/api/exit-nodes");
+  } catch (error) {
+    state.egress = { nodes: [], default_node_id: "", required: true, error: error.message };
+  }
+  const required = !!state.egress.required;
+  $("#runEgressChoice").hidden = !required;
+  $("#queueEgressChoice").hidden = !required;
+  $("#exitNodeSettings").hidden = !required;
+  if (!required) return;
+  const runValue = $("#runExitNode").value;
+  const queueValue = $("#queueExitNode").value;
+  $("#runExitNode").innerHTML = exitNodeOptions(runValue);
+  $("#queueExitNode").innerHTML = exitNodeOptions(queueValue);
+  $("#defaultExitNode").innerHTML = exitNodeOptions(state.egress.default_node_id, false);
+  const defaultNode = state.egress.nodes.find(node => node.id === state.egress.default_node_id);
+  const status = state.egress.error || (!defaultNode
+    ? "No default selected. LinkedIn browser work is blocked until you choose an online device."
+    : defaultNode.online
+      ? `${defaultNode.name} is online. Scheduled inbox sync uses this node.`
+      : `${defaultNode.name} is offline. Scheduled inbox sync will not open LinkedIn.`);
+  $("#defaultEgressStatus").textContent = status;
+  updateRunEgressStatus();
+}
+
+$("#saveDefaultExitNode").addEventListener("click", async () => {
+  const button = $("#saveDefaultExitNode");
+  button.disabled = true;
+  try {
+    await api("/api/exit-nodes/default", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ node_id: $("#defaultExitNode").value }),
+    });
+    await loadExitNodes();
+    showToast("Default exit node saved.");
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+});
 
 // ─── AI Settings Save ───────────────────────────────────────────────────────
 if ($("#btnSaveAiConfig")) {
@@ -576,6 +658,7 @@ $("#btnLaunch").addEventListener("click", async () => {
         send_on_mismatch: $("#sendOnMismatch").checked,
         ai_personalize: $("#aiPersonalize").checked,
         ai_voice: $("#aiVoice").value,
+        exit_node_id: $("#runExitNode").value,
       }),
     });
 
@@ -590,6 +673,7 @@ $("#btnLaunch").addEventListener("click", async () => {
   } finally {
     btn.disabled = false;
     btn.innerHTML = `Launch Campaign <i data-lucide="rocket" style="width:16px;"></i>`;
+    updateRunEgressStatus();
     lucide.createIcons();
   }
 });
@@ -642,6 +726,7 @@ $("#btnQueueCampaign").addEventListener("click", async () => {
         send_on_mismatch: $("#sendOnMismatch").checked,
         ai_personalize: $("#aiPersonalize").checked,
         ai_voice: $("#aiVoice").value,
+        exit_node_id: $("#queueExitNode").value,
       }),
     });
     state.uploadId = null;
@@ -774,6 +859,11 @@ function renderScheduledCampaign(campaign) {
       </div>
     </div>
     <div class="queue-meta"><div><strong>Daily chunk:</strong> ${Number(campaign.daily_chunk || 0)}</div><div><strong>Next due:</strong> ${esc(due)}</div></div>
+    ${state.egress?.required ? `<div class="queue-route">
+      <label for="queue-route-${Number(campaign.id)}">Network for future chunks</label>
+      <select id="queue-route-${Number(campaign.id)}" data-queue-exit-node>${exitNodeOptions(campaign.exit_node_id || "")}</select>
+      <button type="button" class="btn small" data-queue-action="exit-node">Save network</button>
+    </div>` : ""}
     <div class="queue-controls">
       <button type="button" class="btn small" data-queue-action="targets" aria-expanded="false" aria-controls="queue-targets-${Number(campaign.id)}">View targets</button>
       ${canPause ? `<button type="button" class="btn small" data-queue-action="pause" aria-label="Pause ${esc(campaign.name || "campaign")}">Pause</button>` : ""}
@@ -837,7 +927,14 @@ $("#scheduledCampaigns").addEventListener("click", async (event) => {
   if (operation === "cancel" && !window.confirm("Cancel this scheduled campaign? Contacts not yet sent will stay unsent.")) return;
   button.disabled = true;
   try {
-    if (operation === "source") {
+    if (operation === "exit-node") {
+      const nodeId = row.querySelector("[data-queue-exit-node]")?.value || "";
+      await api(`/api/queue/${campaignId}/exit-node?operator=${encodeURIComponent(operator)}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ node_id: nodeId }),
+      });
+      showToast("Campaign network saved for future chunks.");
+    } else if (operation === "source") {
       const response = await fetch(`/api/queue/${campaignId}/source?operator=${encodeURIComponent(operator)}`);
       if (!response.ok) {
         let detail = response.statusText;
@@ -1023,6 +1120,7 @@ function connectWS() {
       case "state":
         applyState(ev.state);
         applyTotals(ev.totals);
+        renderRunEgress(ev.egress);
         if (ev.message) $("#runMessage").textContent = ev.message;
         break;
       case "current":
@@ -1038,6 +1136,13 @@ function connectWS() {
     }
   };
   ws.onclose = () => setTimeout(connectWS, 2500);
+}
+
+function renderRunEgress(egress) {
+  const element = $("#runEgressActual");
+  element.hidden = !egress?.node_name;
+  element.textContent = egress?.node_name
+    ? `Network: ${egress.node_name} · Public IP: ${egress.public_ip}` : "";
 }
 
 function applyState(s) {
@@ -1059,6 +1164,7 @@ async function refreshRunStatus() {
     const snapshot = await api("/api/status");
     applyState(snapshot.state || "idle");
     applyTotals(snapshot.totals || {});
+    renderRunEgress(snapshot.egress);
     if (snapshot.message) {
       $("#runMessage").textContent = snapshot.message;
     } else if (snapshot.current?.linkedin_url) {
@@ -1215,7 +1321,8 @@ function renderInboxSync(runs) {
   const latest = [...runs].sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0))[0];
   summary.innerHTML = `<strong>Latest sync: ${esc(latest.status || "unknown")}</strong>
     <span>${latest.started_at ? `Started ${esc(formatDateTime(latest.started_at))}` : "Start time unavailable"}</span>
-    ${latest.finished_at ? `<span>Finished ${esc(formatDateTime(latest.finished_at))}</span>` : ""}`;
+    ${latest.finished_at ? `<span>Finished ${esc(formatDateTime(latest.finished_at))}</span>` : ""}
+    ${latest.exit_node_id ? `<span>Exit node: ${esc(latest.exit_node_id)} · Public IP: ${esc(latest.egress_ipv4 || "unverified")}</span>` : ""}`;
   coverage.innerHTML = inboxCoverageHtml(latest.coverage);
 }
 
@@ -1861,6 +1968,7 @@ document.addEventListener("keydown", (e) => {
 async function boot() {
   try {
     await loadConfig();
+    await loadExitNodes();
   } catch (e) {
     showToast("Failed to load config: " + e.message, "error");
   }

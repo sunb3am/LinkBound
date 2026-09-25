@@ -54,6 +54,7 @@ async def run_due_once(manager, settings, now: datetime | None = None) -> bool:
             send_on_mismatch=bool(options.get("send_on_mismatch", False)),
             ai_personalize=bool(options.get("ai_personalize", False)),
             ai_voice=str(options.get("ai_voice", "auto")),
+            exit_node_id=str(options.get("exit_node_id") or ""),
         )
         return True
     return False

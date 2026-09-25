@@ -124,6 +124,7 @@ class Settings:
     allow_tailnet_devices: bool
     allow_live_sends: bool
     inbound_schedule: InboundScheduleConfig = field(default_factory=InboundScheduleConfig)
+    require_exit_node: bool = False
     root: Path = ROOT
     data_dir: Path = DATA_DIR
     profile_root: Path = ROOT
@@ -244,6 +245,13 @@ def load_settings() -> Settings:
         raise ValueError("LINKBOUND_ALLOW_LIVE_SENDS must be true or false")
     allow_live_sends = send_value == "true"
 
+    exit_value = os.environ.get(
+        "LINKBOUND_REQUIRE_EXIT_NODE", "true" if require_tailscale_auth else "false"
+    ).strip().casefold()
+    if exit_value not in {"true", "false"}:
+        raise ValueError("LINKBOUND_REQUIRE_EXIT_NODE must be true or false")
+    require_exit_node = exit_value == "true"
+
     sync_value = os.environ.get("LINKBOUND_INBOUND_SYNC_ENABLED", "false").strip().casefold()
     if sync_value not in {"true", "false"}:
         raise ValueError("LINKBOUND_INBOUND_SYNC_ENABLED must be true or false")
@@ -281,6 +289,7 @@ def load_settings() -> Settings:
         tailscale_allowed_users=tailscale_allowed_users,
         allow_tailnet_devices=allow_tailnet_devices,
         allow_live_sends=allow_live_sends,
+        require_exit_node=require_exit_node,
         inbound_schedule=inbound_schedule,
         data_dir=data_dir,
         profile_root=profile_root,

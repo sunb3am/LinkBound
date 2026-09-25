@@ -212,6 +212,7 @@ def init_db(db_path: Path) -> None:
             _migrate_inbound_read_state(_CONN)
             _migrate_inbox_open_intents(_CONN)
             _migrate_operator_identity(_CONN)
+            _migrate_exit_node_settings(_CONN)
             _CONN.execute("CREATE INDEX IF NOT EXISTS idx_requests_normalized_status ON outbound_requests(normalized_linkedin_url, status)")
             _CONN.execute("CREATE INDEX IF NOT EXISTS idx_contacts_normalized_url ON contacts(normalized_linkedin_url)")
             _CONN.commit()
@@ -501,6 +502,51 @@ def _migrate_operator_identity(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_operators_self_url ON operators(linkedin_self_url) "
                  "WHERE linkedin_self_url IS NOT NULL")
     conn.execute("PRAGMA user_version = 9")
+
+
+def _migrate_exit_node_settings(conn: sqlite3.Connection) -> None:
+    """Version 10 stores the operator-selected unattended route."""
+    if int(conn.execute("PRAGMA user_version").fetchone()[0]) >= 10:
+        return
+    conn.execute("""CREATE TABLE IF NOT EXISTS runtime_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""")
+    _ensure_column(conn, "batches", "exit_node_id", "exit_node_id TEXT")
+    _ensure_column(conn, "batches", "egress_ipv4", "egress_ipv4 TEXT")
+    _ensure_column(conn, "sync_runs", "exit_node_id", "exit_node_id TEXT")
+    _ensure_column(conn, "sync_runs", "egress_ipv4", "egress_ipv4 TEXT")
+    conn.execute("PRAGMA user_version = 10")
+
+
+def get_default_exit_node_id() -> str:
+    with _LOCK:
+        row = _conn().execute(
+            "SELECT value FROM runtime_settings WHERE key='default_exit_node_id'"
+        ).fetchone()
+        return str(row[0]) if row else ""
+
+
+def set_default_exit_node_id(node_id: str) -> None:
+    with _LOCK:
+        _conn().execute(
+            """INSERT INTO runtime_settings (key, value, updated_at)
+               VALUES ('default_exit_node_id', ?, ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value,
+                                             updated_at=excluded.updated_at""",
+            (node_id, _now()),
+        )
+        _conn().commit()
+
+
+def record_batch_egress(batch_id: int, node_id: str, ipv4: str) -> None:
+    with _LOCK:
+        _conn().execute(
+            "UPDATE batches SET exit_node_id=?, egress_ipv4=? WHERE id=?",
+            (node_id, ipv4, batch_id),
+        )
+        _conn().commit()
 
 
 def close_db() -> None:
@@ -1307,7 +1353,8 @@ def list_queued_campaigns(operator: str) -> list[dict[str, Any]]:
     with _LOCK:
         rows = _conn().execute(
             """SELECT c.id, c.name, c.operator, c.action, c.status, c.timezone,
-                      c.daily_chunk, c.start_at_utc, c.source_name, c.pause_reason, c.created_at,
+                      c.daily_chunk, c.start_at_utc, c.source_name, c.pause_reason,
+                      c.safety_json AS run_options_json, c.created_at,
                       c.updated_at, COUNT(t.id) AS total,
                       SUM(CASE WHEN t.state='queued' THEN 1 ELSE 0 END) AS queued,
                       SUM(CASE WHEN t.state='sending' THEN 1 ELSE 0 END) AS sending,
@@ -1321,19 +1368,59 @@ def list_queued_campaigns(operator: str) -> list[dict[str, Any]]:
                 WHERE c.operator=? GROUP BY c.id ORDER BY c.id DESC""",
             (operator,),
         ).fetchall()
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            item = dict(row)
+            options = json.loads(item.pop("run_options_json") or "{}")
+            item["exit_node_id"] = str(options.get("exit_node_id") or "")
+            result.append(item)
+        return result
 
 
 def get_queued_campaign(campaign_id: int, operator: str) -> dict[str, Any] | None:
     with _LOCK:
         row = _conn().execute(
             """SELECT id, name, operator, action, status, timezone, daily_chunk,
-                      start_at_utc, source_name, validation_json, pause_reason, created_at, updated_at
+                      start_at_utc, source_name, validation_json, pause_reason,
+                      safety_json AS run_options_json,
+                      created_at, updated_at
                  FROM campaigns WHERE id=? AND operator=?
                    AND EXISTS (SELECT 1 FROM campaign_targets WHERE campaign_id=?)""",
             (campaign_id, operator, campaign_id),
         ).fetchone()
-        return dict(row) if row else None
+        if row is None:
+            return None
+        item = dict(row)
+        options = json.loads(item.pop("run_options_json") or "{}")
+        item["exit_node_id"] = str(options.get("exit_node_id") or "")
+        return item
+
+
+def set_campaign_exit_node_id(campaign_id: int, operator: str, node_id: str) -> bool:
+    """Change the route for future chunks without touching a running target."""
+    with _LOCK:
+        conn = _conn()
+        row = conn.execute(
+            "SELECT status, safety_json AS run_options_json FROM campaigns WHERE id=? AND operator=?",
+            (campaign_id, operator),
+        ).fetchone()
+        if row is None:
+            return False
+        if row["status"] not in {"queued", "paused"}:
+            raise ValueError("Only queued or paused campaigns can change exit node")
+        if conn.execute(
+            "SELECT 1 FROM campaign_targets WHERE campaign_id=? AND state='sending' LIMIT 1",
+            (campaign_id,),
+        ).fetchone():
+            raise ValueError("Wait for the active chunk to finish before changing exit node")
+        options = json.loads(row["run_options_json"] or "{}")
+        options["exit_node_id"] = node_id
+        conn.execute(
+            "UPDATE campaigns SET safety_json=?, updated_at=? WHERE id=? AND operator=?",
+            (json.dumps(options), _now(), campaign_id, operator),
+        )
+        conn.commit()
+        return True
 
 
 def get_campaign_source(campaign_id: int, operator: str) -> tuple[str, bytes] | None:

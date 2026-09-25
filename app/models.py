@@ -124,6 +124,7 @@ class StartRequest(BaseModel):
     # Tailor each message with AI using the captured profile context.
     ai_personalize: bool = False
     ai_voice: str = "auto"  # professional | founder | casual | auto
+    exit_node_id: str = ""
 
 
 class QueueCampaignRequest(BaseModel):
@@ -136,6 +137,11 @@ class QueueCampaignRequest(BaseModel):
     send_on_mismatch: bool = False
     ai_personalize: bool = False
     ai_voice: str = "auto"
+    exit_node_id: str = ""
+
+
+class ExitNodeSelection(BaseModel):
+    node_id: str = ""
 
 
 class OutreachReviewRequest(BaseModel):
@@ -147,6 +153,7 @@ class OutreachReviewRequest(BaseModel):
 class ResolveNamesRequest(BaseModel):
     upload_id: str
     mode: str = "page"  # "page" (visit profiles, accurate) | "ai" (slug cleanup, fast)
+    exit_node_id: str = ""
 
 
 class AIGenerateRequest(BaseModel):
@@ -191,6 +198,7 @@ class EnqueueRequest(BaseModel):
     ai_personalize: bool = False
     ai_voice: str = "auto"
     webhook_url: str = ""
+    exit_node_id: str = ""
 
 
 class EnqueueResponse(BaseModel):

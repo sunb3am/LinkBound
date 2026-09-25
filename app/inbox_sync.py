@@ -28,6 +28,8 @@ async def _recover_unread(
         browser = InboxBrowser(runner._require_page())
         await browser.verify_identity(expected_self_url)
         for item in pending:
+            if getattr(settings, "require_exit_node", False):
+                await runner.verify_egress()
             baseline = InboxRow(-1, item["participant_name"], item["preview_text"], True, False)
             thread_key = item["thread_key"]
             try:
@@ -132,9 +134,16 @@ async def scan_account(
             if errors:
                 raise InboxStateError("Previous unread markers need manual review")
             await runner.start()
+            observation = getattr(runner, "egress_observation", None)
+            if observation:
+                inbound_store.record_sync_egress(
+                    run_id, observation["node_id"], observation["public_ip"]
+                )
             browser = InboxBrowser(runner._require_page())
             await browser.verify_identity(expected_self_url)
             for folder in FOLDERS:
+                if getattr(settings, "require_exit_node", False):
+                    await runner.verify_egress()
                 observed = stored = unresolved = 0
                 folder_errors: list[str] = []
                 try:
@@ -153,6 +162,8 @@ async def scan_account(
                                   max(0, len(candidates) - len(selected)) +
                                   (0 if list_exhausted else 1))
                     for row_snapshot in selected:
+                        if getattr(settings, "require_exit_node", False):
+                            await runner.verify_egress()
                         thread_key = None
                         intent_id = None
                         attempted_open = False

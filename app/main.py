@@ -30,11 +30,13 @@ from .queue_schedule import distribute_due_times
 from .queue_worker import queue_loop
 from .inbound_schedule import inbound_loop
 from .linkedin_urls import canonical_profile_url
+from .egress import EgressError, available_exit_nodes
 from .access import TailscaleAuthMiddleware
 from .ai import GeminiClient
 from .models import (
     ActionType,
     QueueCampaignRequest,
+    ExitNodeSelection,
     OutreachReviewRequest,
     AIGenerateRequest,
     AIReviewRequest,
@@ -106,6 +108,56 @@ STATIC_DIR = settings.root / "static"
 _UPLOADS: dict[str, dict] = {}
 
 manager = RunCoordinator(settings, gemini)
+
+
+async def _validate_exit_node_id(node_id: str) -> str:
+    node_id = node_id.strip()
+    if not node_id:
+        return ""
+    try:
+        nodes = await asyncio.to_thread(available_exit_nodes)
+    except EgressError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    node = next((item for item in nodes if item["id"] == node_id), None)
+    if node is None:
+        raise HTTPException(400, "Exit node is not approved on this tailnet")
+    if not node["online"]:
+        raise HTTPException(409, "Selected exit node is offline")
+    return node_id
+
+
+async def _require_browser_route(node_id: str) -> None:
+    if not settings.require_exit_node:
+        return
+    effective = node_id or db.get_default_exit_node_id()
+    if not effective:
+        raise HTTPException(409, "Select an online exit node before LinkedIn browser work")
+    await _validate_exit_node_id(effective)
+
+
+@app.get("/api/exit-nodes")
+async def exit_nodes():
+    try:
+        nodes = await asyncio.to_thread(available_exit_nodes)
+        error = ""
+    except EgressError as exc:
+        nodes = []
+        error = str(exc)
+    return {
+        "nodes": nodes,
+        "default_node_id": db.get_default_exit_node_id(),
+        "required": settings.require_exit_node,
+        "error": error,
+    }
+
+
+@app.put("/api/exit-nodes/default")
+async def set_default_exit_node(selection: ExitNodeSelection):
+    if manager.active() is not None:
+        raise HTTPException(409, "Wait for the current browser operation to finish")
+    node_id = await _validate_exit_node_id(selection.node_id)
+    db.set_default_exit_node_id(node_id)
+    return {"default_node_id": node_id}
 
 
 def _parse_action(raw: str) -> ActionType:
@@ -414,7 +466,8 @@ async def queue_campaign(req: QueueCampaignRequest):
             validation_json=json.dumps(rejected),
             run_options_json=json.dumps({"send_on_mismatch": req.send_on_mismatch,
                                          "ai_personalize": req.ai_personalize,
-                                         "ai_voice": req.ai_voice}),
+                                         "ai_voice": req.ai_voice,
+                                         "exit_node_id": req.exit_node_id}),
         )
     except (ValueError, sqlite3.IntegrityError) as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -434,6 +487,21 @@ async def queue_detail(campaign_id: int, operator: str):
     if campaign is None:
         raise HTTPException(404, "Queued campaign not found for this account.")
     return {"campaign": campaign, "targets": db.list_campaign_targets(campaign_id)}
+
+
+@app.put("/api/queue/{campaign_id}/exit-node")
+async def set_campaign_exit_node(campaign_id: int, operator: str,
+                                 selection: ExitNodeSelection):
+    if manager.active() is not None:
+        raise HTTPException(409, "Wait for the current browser operation to finish")
+    node_id = await _validate_exit_node_id(selection.node_id)
+    try:
+        changed = db.set_campaign_exit_node_id(campaign_id, operator, node_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not changed:
+        raise HTTPException(404, "Queued campaign not found for this account")
+    return {"campaign_id": campaign_id, "exit_node_id": node_id}
 
 
 @app.get("/api/queue/{campaign_id}/source")
@@ -494,6 +562,7 @@ async def start(req: StartRequest, x_user_gemini_key: str | None = Header(None),
         raise HTTPException(400, "Operator does not match the previewed batch.")
     if req.ai_personalize and not gemini.available:
         raise HTTPException(400, "AI personalization requested but AI is not enabled/configured.")
+    await _require_browser_route(req.exit_node_id)
 
     try:
         orch = await manager.start(
@@ -506,6 +575,7 @@ async def start(req: StartRequest, x_user_gemini_key: str | None = Header(None),
             ai_voice=req.ai_voice,
             custom_gemini_key=x_user_gemini_key,
             custom_gemini_model=x_user_gemini_model,
+            exit_node_id=req.exit_node_id,
         )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -522,8 +592,13 @@ async def resolve_names(req: ResolveNamesRequest):
         raise HTTPException(404, "Upload not found. Re-run the preview.")
     if req.mode == "ai" and not gemini.available:
         raise HTTPException(400, "AI is not enabled/configured.")
+    if req.mode == "page":
+        await _require_browser_route(req.exit_node_id)
     try:
-        updated = await manager.resolve_names(upload["operator"], upload["jobs"], mode=req.mode)
+        updated = await manager.resolve_names(
+            upload["operator"], upload["jobs"], mode=req.mode,
+            exit_node_id=req.exit_node_id,
+        )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {"updated": updated}
@@ -753,6 +828,7 @@ async def v1_enqueue(req: EnqueueRequest, _key: str = Depends(require_api_key)):
         raise HTTPException(400, "This action needs a message template (template_id or message_template).")
     if req.ai_personalize and not gemini.available:
         raise HTTPException(400, "ai_personalize requested but AI is not enabled/configured.")
+    await _require_browser_route(req.exit_node_id)
 
     profiles = [p.model_dump() for p in req.profiles]
     _preview, jobs, _notes = csv_ingest.build_jobs_from_profiles(
@@ -766,6 +842,7 @@ async def v1_enqueue(req: EnqueueRequest, _key: str = Depends(require_api_key)):
             send_on_mismatch=req.send_on_mismatch, ai_personalize=req.ai_personalize,
             ai_voice=req.ai_voice,
             webhook_url=req.webhook_url or settings.api.default_webhook,
+            exit_node_id=req.exit_node_id,
         )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc

@@ -414,6 +414,12 @@
               <div id="sendModeNotice" class="hint" style="margin-top: 12px;" hidden>Live sends are disabled on this host. Dry runs remain available.</div>
             </div>
 
+            <div class="egress-choice" id="runEgressChoice">
+              <label for="runExitNode">Network for this run</label>
+              <select id="runExitNode" aria-describedby="runEgressStatus"></select>
+              <p id="runEgressStatus" role="status">Checking available exit nodes…</p>
+            </div>
+
             <div class="table-wrapper" style="max-height: 280px; overflow-y: auto; margin-bottom: 24px;">
               <table id="previewTable">
                 <thead>
@@ -459,6 +465,11 @@
                 <div class="form-group">
                   <label for="queueDailyChunk">Contacts per day</label>
                   <input id="queueDailyChunk" type="number" min="1" max="100" value="25" required>
+                </div>
+                <div class="form-group" id="queueEgressChoice">
+                  <label for="queueExitNode">Network for scheduled chunks</label>
+                  <select id="queueExitNode" aria-describedby="queueEgressHint"></select>
+                  <div class="help-text" id="queueEgressHint">Use the saved default or pin this campaign to a device.</div>
                 </div>
               </div>
               <div id="queueSendNotice" class="queue-send-notice" role="status" hidden>Live sends are disabled on this host. The campaign can be queued, but sending will remain disabled.</div>
@@ -546,6 +557,7 @@
           <div class="card-title" style="margin: 0 auto 24px auto;">System Status</div>
           <h2 id="runStateLabel" style="color: var(--accent-green); margin-bottom: 16px; font-size: 2.5rem;">Idle</h2>
           <div id="runMessage" style="color: var(--text-faint); font-family: var(--font-mono);">No active batch.</div>
+          <div id="runEgressActual" class="run-egress-actual" hidden></div>
         </div>
 
         <div class="stats-grid stagger-2">
@@ -692,6 +704,15 @@
         </div>
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px;" class="stagger-2">
+
+          <div class="card egress-settings" id="exitNodeSettings">
+            <div class="card-title">LinkedIn network</div>
+            <p class="hint">Choose the default exit node for unattended inbox sync and new browser work. A task can use a different node.</p>
+            <label for="defaultExitNode">Default exit node</label>
+            <select id="defaultExitNode" aria-describedby="defaultEgressStatus"></select>
+            <p id="defaultEgressStatus" class="egress-status" role="status">Checking available devices…</p>
+            <button class="btn small" id="saveDefaultExitNode" type="button">Save default</button>
+          </div>
 
           <!-- AI Configuration -->
           <div class="card">
