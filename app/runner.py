@@ -14,6 +14,7 @@ LinkedIn turns into an InMail). InMail only happens for an explicit INMAIL actio
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass, field
 
 from playwright.async_api import (
@@ -61,20 +62,41 @@ class LinkedInRunner:
         self.exit_node_id: str = ""
         self.egress_observation: dict | None = None
         self._egress_controller: ExitNodeController | None = None
+        self._egress_watchdog_task: asyncio.Task | None = None
+        self._egress_fault: EgressError | None = None
+        self._close_lock = asyncio.Lock()
 
     # ---- lifecycle --------------------------------------------------------
 
     async def start(self, *, accept_downloads: bool | None = None,
                     downloads_path: str | None = None) -> None:
         if getattr(self.settings, "require_exit_node", False):
+            if getattr(self.settings, "egress_cleanup_fault", ""):
+                raise EgressError("Exit-node cleanup failed; inspect and restart LinkBound")
             node_id = self.exit_node_id or db.get_default_exit_node_id()
             if not node_id:
                 raise EgressError("Select an exit node before LinkedIn browser work")
             controller = ExitNodeController()
-            self.egress_observation = await asyncio.to_thread(controller.begin, node_id)
             self._egress_controller = controller
+            begin_task = asyncio.create_task(asyncio.to_thread(controller.begin, node_id))
+            try:
+                self.egress_observation = await asyncio.shield(begin_task)
+            except BaseException:
+                # A hard stop must wait for the in-flight Tailscale command;
+                # cancelling to_thread does not stop its operating-system thread.
+                try:
+                    await begin_task
+                except BaseException:
+                    pass
+                try:
+                    await asyncio.to_thread(controller.end)
+                finally:
+                    self._egress_controller = None
+                raise
         try:
             await self._start_browser(accept_downloads, downloads_path)
+            if self._egress_controller is not None:
+                self._egress_watchdog_task = asyncio.create_task(self._watch_egress())
         except BaseException:
             await self.close()
             raise
@@ -129,29 +151,54 @@ class LinkedInRunner:
             raise LinkedInAccountStop(stop.detail)
 
     async def logged_in_now(self) -> bool:
+        await self.verify_egress()
         page = self._require_page()
         return not self._on_auth_wall(page.url)
 
     async def close(self) -> None:
-        try:
-            if self._context is not None:
-                await self._context.close()
-        finally:
-            try:
-                if self._browser is not None:
-                    await self._browser.close()
-                if self._pw is not None:
-                    await self._pw.stop()
-            finally:
-                self._context = self._browser = self._page = self._pw = None
-                controller = self._egress_controller
+        async with self._close_lock:
+            watchdog = self._egress_watchdog_task
+            self._egress_watchdog_task = None
+            if watchdog is not None and watchdog is not asyncio.current_task():
+                watchdog.cancel()
+                with suppress(asyncio.CancelledError):
+                    await watchdog
+            errors = []
+            for resource in (self._context, self._browser, self._pw):
+                if resource is not None:
+                    try:
+                        if resource is self._pw:
+                            await resource.stop()
+                        else:
+                            await resource.close()
+                    except Exception as exc:
+                        errors.append(exc)
+            if errors:
+                # Keep the exit node selected if Chrome may still be alive.
+                raise EgressError("Browser close failed; exit-node route was retained") from errors[0]
+            self._context = self._browser = self._page = self._pw = None
+            controller = self._egress_controller
+            if controller is not None:
+                await asyncio.to_thread(controller.end)
                 self._egress_controller = None
-                if controller is not None:
-                    await asyncio.to_thread(controller.end)
+
+    async def _watch_egress(self, *, interval_seconds: float = 3) -> None:
+        while True:
+            await asyncio.sleep(interval_seconds)
+            try:
+                await self.verify_egress()
+            except EgressError as exc:
+                self._egress_fault = exc
+                if self._context is not None:
+                    with suppress(Exception):
+                        await self._context.close()
+                return
 
     async def verify_egress(self) -> None:
         if not getattr(getattr(self, "settings", None), "require_exit_node", False):
             return
+        if self._egress_fault is not None:
+            raise self._egress_fault
         if self._egress_controller is None:
             raise EgressError("No verified exit-node route is active")
         await asyncio.to_thread(self._egress_controller.check)

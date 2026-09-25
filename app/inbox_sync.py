@@ -6,6 +6,7 @@ import mimetypes
 from . import db, inbound_store
 from .inbox_browser import FOLDERS, InboxAuthError, InboxBrowser, InboxRow, InboxStateError
 from .runner import LinkedInRunner
+from .egress import EgressError
 
 
 MAX_ROWS_PER_FOLDER = 8
@@ -137,7 +138,8 @@ async def scan_account(
             observation = getattr(runner, "egress_observation", None)
             if observation:
                 inbound_store.record_sync_egress(
-                    run_id, observation["node_id"], observation["public_ip"]
+                    run_id, observation["node_id"], observation["node_name"],
+                    observation["public_ip"]
                 )
             browser = InboxBrowser(runner._require_page())
             await browser.verify_identity(expected_self_url)
@@ -228,6 +230,8 @@ async def scan_account(
                             if not persisted:
                                 unresolved += 1
                             folder_errors.append(f"Thread {row_snapshot.index}: verification required")
+                        except EgressError:
+                            raise
                         except Exception as exc:
                             fatal = exc
                             if not persisted:
@@ -269,6 +273,8 @@ async def scan_account(
                                     )
                         if fatal is not None:
                             raise fatal
+                except EgressError:
+                    raise
                 except Exception as exc:
                     stopped = True
                     folder_errors.append(f"Folder unavailable: {type(exc).__name__}")
@@ -319,6 +325,8 @@ async def scan_account(
                                     source="profile_first_degree",
                                 )
                             checked += 1
+                        except EgressError:
+                            raise
                         except Exception as exc:
                             stopped = True
                             detail = f": {exc}" if isinstance(exc, InboxStateError) else ""

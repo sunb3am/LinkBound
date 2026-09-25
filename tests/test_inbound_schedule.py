@@ -50,3 +50,31 @@ def test_daily_inbound_disabled_by_default(monkeypatch):
         Coordinator(), settings(enabled=False),
         datetime(2026, 9, 24, 1, 5, tzinfo=timezone.utc),
     )) is False
+
+
+def test_egress_block_does_not_consume_daily_inbound_slot(monkeypatch):
+    calls = []
+
+    async def scan(*_args, **_kwargs):
+        calls.append(True)
+        return {"run_id": 9, "status": "partial", "stopped": False}
+
+    monkeypatch.setattr(inbound_schedule, "scan_account", scan)
+    monkeypatch.setattr(inbound_schedule.inbound_store, "list_sync_runs", lambda *_: [{
+        "started_at": "2026-09-24T01:05:00+00:00",
+        "status": "partial",
+        "error": "Collector stopped: EgressError: exit node offline",
+    }])
+    monkeypatch.setattr(inbound_schedule, "db", SimpleNamespace(
+        get_default_exit_node_id=lambda: "node-a"), raising=False)
+    available = []
+    monkeypatch.setattr(inbound_schedule, "available_exit_nodes", lambda: available,
+                        raising=False)
+    hosted = settings()
+    hosted.require_exit_node = True
+    due = datetime(2026, 9, 24, 1, 25, tzinfo=timezone.utc)
+    assert asyncio.run(inbound_schedule.run_due_once(Coordinator(), hosted, due)) is False
+    assert calls == []
+    available.append({"id": "node-a", "online": True})
+    assert asyncio.run(inbound_schedule.run_due_once(Coordinator(), hosted, due)) is True
+    assert calls == [True]

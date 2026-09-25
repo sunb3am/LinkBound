@@ -25,6 +25,7 @@ set -a
 source "$env_file"
 set +a
 [[ "${LINKBOUND_REQUIRE_TAILSCALE_AUTH:-}" == "true" &&
+   "${LINKBOUND_REQUIRE_EXIT_NODE:-true}" == "true" &&
    "${LINKBOUND_ALLOW_LIVE_SENDS:-}" == "false" &&
    "${LINKBOUND_DATA_DIR:-}" = /* &&
    "${LINKBOUND_PROFILE_ROOT:-}" = /* ]] || {
@@ -92,7 +93,13 @@ rollback() {
     fi
     systemctl daemon-reload
     if [[ "$was_active" -eq 1 ]]; then
-      systemctl start linkbound-app.service || true
+      if [[ -n "$previous" && -f "$previous/deploy/exit-node-gate.v1" ]]; then
+        systemctl start linkbound-app.service || true
+      else
+        # An old release may open Chrome through the Linode's direct route.
+        systemctl disable linkbound-app.service || true
+        echo "Previous release lacks the exit-node gate; app left stopped after rollback." >&2
+      fi
     fi
   fi
   if [[ "$release_created" -eq 1 ]]; then

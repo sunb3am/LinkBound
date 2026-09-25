@@ -2,9 +2,10 @@
 
 import pytest
 import asyncio
+import threading
 from types import SimpleNamespace
 
-from app.egress import EgressError, ExitNodeController, parse_exit_nodes
+from app.egress import EgressError, ExitNodeController, parse_exit_nodes, _routed_through_tailscale
 from app.runner import LinkedInRunner
 from app import db
 
@@ -83,7 +84,7 @@ def test_missing_public_ip_clears_route_and_blocks_task():
     switched = []
     controller = ExitNodeController(
         status=lambda: _status(selected=True),
-        selected=lambda: "node-a",
+        selected=lambda: switched[-1] if switched else "",
         switch=switched.append,
         public_ip=lambda: "",
         routed=lambda: True,
@@ -97,7 +98,7 @@ def test_system_route_must_use_tailscale_interface():
     switched = []
     controller = ExitNodeController(
         status=lambda: _status(selected=True),
-        selected=lambda: "node-a",
+        selected=lambda: switched[-1] if switched else "",
         switch=switched.append,
         public_ip=lambda: "198.51.100.42",
         routed=lambda: False,
@@ -105,6 +106,33 @@ def test_system_route_must_use_tailscale_interface():
     with pytest.raises(EgressError, match="route"):
         controller.begin("node-a")
     assert switched == ["node-a", ""]
+
+
+def test_existing_route_is_cleared_before_new_browser_lease():
+    current = ["old-node"]
+    switched = []
+
+    def switch(node_id):
+        switched.append(node_id)
+        current[0] = node_id
+
+    controller = ExitNodeController(
+        status=lambda: _status(selected=current[0] == "node-a"),
+        selected=lambda: current[0], switch=switch,
+        public_ip=lambda: "198.51.100.42", routed=lambda: True,
+    )
+    controller.begin("node-a")
+    assert switched[:2] == ["", "node-a"]
+
+
+def test_ipv6_direct_route_is_not_accepted(monkeypatch):
+    def fake_run(args, **_kwargs):
+        route = "1.1.1.1 dev tailscale0 src 100.103.144.62" if "-4" in args else \
+            "2606:4700:4700::1111 dev eth0 src 2600:3c01::1"
+        return SimpleNamespace(stdout=route)
+
+    monkeypatch.setattr("app.egress.subprocess.run", fake_run)
+    assert _routed_through_tailscale() is False
 
 
 def test_hosted_runner_refuses_to_launch_without_node(monkeypatch):
@@ -127,6 +155,9 @@ def test_offline_override_blocks_before_playwright(monkeypatch):
             requested.append(node_id)
             raise EgressError("Selected exit node is offline")
 
+        def end(self):
+            pass
+
     monkeypatch.setattr("app.runner.async_playwright", lambda: launched.append(True))
     monkeypatch.setattr("app.runner.ExitNodeController", OfflineController)
     monkeypatch.setattr("app.runner.db.get_default_exit_node_id", lambda: "default-node")
@@ -139,6 +170,61 @@ def test_offline_override_blocks_before_playwright(monkeypatch):
     assert launched == []
 
 
+def test_cancel_during_route_switch_waits_and_clears_before_return(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    cleared = threading.Event()
+    launched = []
+
+    class SlowController:
+        def begin(self, _node_id):
+            entered.set()
+            assert release.wait(2)
+            return {"node_id": "node-a", "node_name": "laptop", "public_ip": "198.51.100.42"}
+
+        def end(self):
+            cleared.set()
+
+    monkeypatch.setattr("app.runner.ExitNodeController", SlowController)
+    monkeypatch.setattr("app.runner.async_playwright", lambda: launched.append(True))
+    settings = SimpleNamespace(browser=SimpleNamespace(), require_exit_node=True)
+    runner = LinkedInRunner(settings, "me")
+    runner.exit_node_id = "node-a"
+
+    async def run():
+        task = asyncio.create_task(runner.start())
+        assert await asyncio.to_thread(entered.wait, 1)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert cleared.is_set()
+    assert launched == []
+
+
+def test_watchdog_closes_browser_when_route_disappears():
+    closed = []
+
+    class LostController:
+        def check(self):
+            raise EgressError("Selected exit-node route changed")
+
+    class Context:
+        async def close(self):
+            closed.append(True)
+
+    settings = SimpleNamespace(browser=SimpleNamespace(), require_exit_node=True)
+    runner = LinkedInRunner(settings, "me")
+    runner._egress_controller = LostController()
+    runner._context = Context()
+    asyncio.run(runner._watch_egress(interval_seconds=0))
+    assert closed == [True]
+    with pytest.raises(EgressError, match="route changed"):
+        asyncio.run(runner.verify_egress())
+
+
 def test_runner_close_clears_active_route():
     closed = []
     settings = SimpleNamespace(browser=SimpleNamespace(), require_exit_node=True)
@@ -146,6 +232,50 @@ def test_runner_close_clears_active_route():
     runner._egress_controller = SimpleNamespace(end=lambda: closed.append(True))
     asyncio.run(runner.close())
     assert closed == [True]
+
+
+def test_browser_close_failure_keeps_route_until_retry():
+    calls = []
+
+    class Context:
+        async def close(self):
+            calls.append("browser")
+            if calls.count("browser") == 1:
+                raise RuntimeError("Chrome still open")
+
+    settings = SimpleNamespace(browser=SimpleNamespace(), require_exit_node=True)
+    runner = LinkedInRunner(settings, "me")
+    runner._context = Context()
+    runner._egress_controller = SimpleNamespace(end=lambda: calls.append("route"))
+    with pytest.raises(EgressError, match="route was retained"):
+        asyncio.run(runner.close())
+    assert calls == ["browser"]
+    asyncio.run(runner.close())
+    assert calls == ["browser", "browser", "route"]
+
+
+def test_failed_route_cleanup_remains_retryable():
+    calls = []
+    current = ["node-a"]
+
+    def switch(node_id):
+        calls.append(node_id)
+        if len(calls) == 1:
+            raise EgressError("Cannot clear exit node")
+        current[0] = ""
+
+    controller = ExitNodeController(
+        status=lambda: _status(selected=True), selected=lambda: current[0],
+        switch=switch, public_ip=lambda: "198.51.100.42", routed=lambda: True,
+    )
+    controller.active_node = "node-a"
+    controller.observation = {"node_id": "node-a"}
+    with pytest.raises(EgressError, match="Cannot clear"):
+        controller.end()
+    assert controller.active_node == "node-a"
+    controller.end()
+    assert controller.active_node == ""
+    assert calls == ["", ""]
 
 
 def test_default_exit_node_survives_database_restart(tmp_path):
@@ -186,9 +316,10 @@ def test_batch_records_actual_egress_after_browser_preflight(tmp_path):
     try:
         db.init_db(tmp_path / "audit.sqlite")
         batch_id, _ = db.create_batch("me", "Pilot", "connect", True, 1)
-        db.record_batch_egress(batch_id, "node-a", "198.51.100.42")
+        db.record_batch_egress(batch_id, "node-a", "home-laptop", "198.51.100.42")
         batch = db.get_batch(batch_id)
         assert batch["exit_node_id"] == "node-a"
+        assert batch["exit_node_name"] == "home-laptop"
         assert batch["egress_ipv4"] == "198.51.100.42"
     finally:
         db.close_db()

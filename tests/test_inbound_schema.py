@@ -22,7 +22,7 @@ def test_fresh_database_has_inbound_schema_v10(database):
         "sync_runs": {
             "id", "operator", "mode", "status", "started_at", "finished_at",
             "expected_sections_json", "coverage_json", "error",
-            "exit_node_id", "egress_ipv4",
+            "exit_node_id", "exit_node_name", "egress_ipv4",
         },
         "conversations": {
             "id", "operator", "thread_key", "contact_url", "participant_name",

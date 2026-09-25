@@ -1322,7 +1322,8 @@ function renderInboxSync(runs) {
   summary.innerHTML = `<strong>Latest sync: ${esc(latest.status || "unknown")}</strong>
     <span>${latest.started_at ? `Started ${esc(formatDateTime(latest.started_at))}` : "Start time unavailable"}</span>
     ${latest.finished_at ? `<span>Finished ${esc(formatDateTime(latest.finished_at))}</span>` : ""}
-    ${latest.exit_node_id ? `<span>Exit node: ${esc(latest.exit_node_id)} · Public IP: ${esc(latest.egress_ipv4 || "unverified")}</span>` : ""}`;
+    ${latest.exit_node_id ? `<span>Exit node: ${esc(latest.exit_node_name || latest.exit_node_id)} · Public IP: ${esc(latest.egress_ipv4 || "unverified")}</span>` : ""}
+    ${latest.error ? `<span class="inbox-coverage-error">${esc(latest.error)}</span>` : ""}`;
   coverage.innerHTML = inboxCoverageHtml(latest.coverage);
 }
 

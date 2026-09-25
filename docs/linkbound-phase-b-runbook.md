@@ -79,7 +79,10 @@ default in Settings before any hosted LinkedIn browser task can start.
 Changing the exit node affects all non-tailnet traffic from LinkBound during
 that browser task. It does not change the other VPS. A real laptop pilot must
 verify the selected route, app, viewer, and SSH before scheduled inbox sync or
-hosted sends are enabled.
+hosted sends are enabled. If the first gated deployment fails, rollback leaves
+the prior ungated app stopped and disabled so it cannot open LinkedIn directly.
+The app must be redeployed with the gate or recovered manually after reviewing
+the route and browser state.
 
 Before the first hosted send and after browser upgrades, record the real OS,
 timezone, locale, Chrome and Playwright versions, display, public egress IP,

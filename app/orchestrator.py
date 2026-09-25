@@ -320,13 +320,20 @@ class Orchestrator:
             await runner.close()
 
     async def _wait_if_paused(self) -> None:
-        await self._pause_event.wait()
+        while not self._pause_event.is_set():
+            try:
+                await asyncio.wait_for(self._pause_event.wait(), timeout=3)
+            except asyncio.TimeoutError:
+                if self._runner is not None:
+                    await self._runner.verify_egress()
 
     async def _interruptible_sleep(self, seconds: int) -> None:
         for _ in range(seconds):
             if self._stop_requested:
                 return
             await self._wait_if_paused()
+            if self._runner is not None:
+                await self._runner.verify_egress()
             await asyncio.sleep(1)
 
     # ---- the run loop -----------------------------------------------------
@@ -345,6 +352,7 @@ class Orchestrator:
             if self.egress_observation and self.batch_id is not None:
                 db.record_batch_egress(
                     self.batch_id, self.egress_observation["node_id"],
+                    self.egress_observation["node_name"],
                     self.egress_observation["public_ip"],
                 )
                 self._emit_state("Exit-node route verified. Opening LinkedIn...")
@@ -563,9 +571,26 @@ class Orchestrator:
                     db.finalize_batch(self.batch_id, "error")
             self._emit_state(f"Run failed: {exc}")
         finally:
+            close_error = None
+            for _attempt in range(2):
+                try:
+                    await asyncio.shield(runner.close())
+                    close_error = None
+                    break
+                except Exception as exc:
+                    close_error = exc
             self._runner = None
-            with contextlib.suppress(Exception):
-                await asyncio.shield(self._force_close(runner))
+            if close_error is not None:
+                self.settings.egress_cleanup_fault = str(close_error)
+                self.state = RunState.ERROR
+                if self.batch_id:
+                    with contextlib.suppress(Exception):
+                        db.finalize_batch(self.batch_id, "error")
+                for campaign_id in {job.get("campaign_id") for job in jobs
+                                    if job.get("campaign_id") is not None}:
+                    with contextlib.suppress(Exception):
+                        db.set_campaign_status(campaign_id, "paused", str(close_error))
+                self._emit_state(f"Browser or exit-node cleanup failed: {close_error}")
             if self.batch_id:
                 with contextlib.suppress(Exception):
                     db.mark_inflight_targets_uncertain(self.batch_id)

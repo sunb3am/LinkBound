@@ -514,8 +514,10 @@ def _migrate_exit_node_settings(conn: sqlite3.Connection) -> None:
         updated_at TEXT NOT NULL
     )""")
     _ensure_column(conn, "batches", "exit_node_id", "exit_node_id TEXT")
+    _ensure_column(conn, "batches", "exit_node_name", "exit_node_name TEXT")
     _ensure_column(conn, "batches", "egress_ipv4", "egress_ipv4 TEXT")
     _ensure_column(conn, "sync_runs", "exit_node_id", "exit_node_id TEXT")
+    _ensure_column(conn, "sync_runs", "exit_node_name", "exit_node_name TEXT")
     _ensure_column(conn, "sync_runs", "egress_ipv4", "egress_ipv4 TEXT")
     conn.execute("PRAGMA user_version = 10")
 
@@ -540,11 +542,11 @@ def set_default_exit_node_id(node_id: str) -> None:
         _conn().commit()
 
 
-def record_batch_egress(batch_id: int, node_id: str, ipv4: str) -> None:
+def record_batch_egress(batch_id: int, node_id: str, node_name: str, ipv4: str) -> None:
     with _LOCK:
         _conn().execute(
-            "UPDATE batches SET exit_node_id=?, egress_ipv4=? WHERE id=?",
-            (node_id, ipv4, batch_id),
+            "UPDATE batches SET exit_node_id=?, exit_node_name=?, egress_ipv4=? WHERE id=?",
+            (node_id, node_name, ipv4, batch_id),
         )
         _conn().commit()
 

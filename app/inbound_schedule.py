@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 from zoneinfo import ZoneInfo
 
-from . import inbound_store
+from . import db, inbound_store
+from .egress import EgressError, available_exit_nodes
 from .inbox_sync import scan_account
 
 
@@ -27,11 +28,27 @@ async def run_due_once(manager, settings, now: datetime | None = None) -> bool:
     local_now = now.astimezone(ZoneInfo(schedule.timezone))
     if local_now.strftime("%H:%M") < schedule.time_local:
         return False
+    if getattr(settings, "require_exit_node", False):
+        node_id = db.get_default_exit_node_id()
+        if not node_id:
+            _LOG.warning("Scheduled inbox sync blocked: no default exit node")
+            return False
+        try:
+            nodes = await asyncio.to_thread(available_exit_nodes)
+        except EgressError as exc:
+            _LOG.warning("Scheduled inbox sync blocked: %s", exc)
+            return False
+        if not any(node["id"] == node_id and node["online"] for node in nodes):
+            _LOG.warning("Scheduled inbox sync blocked: default exit node offline")
+            return False
     latest = inbound_store.list_sync_runs(schedule.operator, 1)
-    if latest and datetime.fromisoformat(latest[0]["started_at"]).astimezone(
-        ZoneInfo(schedule.timezone)
-    ).date() == local_now.date():
-        return False
+    if latest:
+        last_started = datetime.fromisoformat(latest[0]["started_at"])
+        if last_started.astimezone(ZoneInfo(schedule.timezone)).date() == local_now.date():
+            egress_failed = "EgressError" in (latest[0].get("error") or "")
+            retry_due = now.astimezone(timezone.utc) - last_started.astimezone(timezone.utc) >= timedelta(minutes=15)
+            if not (egress_failed and retry_due):
+                return False
     result = await scan_account(
         settings, manager, schedule.operator,
         max_rows_per_folder=schedule.max_rows_per_folder,

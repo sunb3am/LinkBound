@@ -50,5 +50,15 @@ def test_exit_node_default_and_campaign_change_are_scoped(tmp_path, monkeypatch)
         assert db.get_queued_campaign(campaign_id, "me")["exit_node_id"] == "node-a"
         assert _request(main.app, "PUT", f"/api/queue/{campaign_id}/exit-node?operator=other",
                         {"node_id": "node-a"}).status_code == 404
+
+        main.settings.require_exit_node = True
+        db.set_default_exit_node_id("")
+        main._UPLOADS["no-route"] = {"operator": "me", "jobs": []}
+        response = _request(main.app, "POST", "/api/start", {
+            "upload_id": "no-route", "operator": "me", "dry_run": True,
+        })
+        assert response.status_code == 409
+        assert "exit node" in response.json()["detail"].lower()
+        assert main.manager.active() is None
     finally:
         db.close_db()

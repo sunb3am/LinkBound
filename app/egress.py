@@ -74,14 +74,21 @@ def _public_ipv4() -> str:
 
 
 def _routed_through_tailscale() -> bool:
-    try:
-        result = subprocess.run(
-            ["ip", "-4", "route", "get", "1.1.1.1"],
-            capture_output=True, text=True, check=True, timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise EgressError("Cannot verify LinkBound's internet route") from exc
-    return " dev tailscale0 " in f" {result.stdout.strip()} "
+    for family, address in (("-4", "1.1.1.1"), ("-6", "2606:4700:4700::1111")):
+        try:
+            result = subprocess.run(
+                ["ip", family, "route", "get", address],
+                capture_output=True, text=True, check=False, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise EgressError("Cannot verify LinkBound's internet route") from exc
+        if getattr(result, "returncode", 0) != 0:
+            if family == "-6" and "Network is unreachable" in (result.stderr or ""):
+                continue  # No IPv6 route exists, so there is no IPv6 path to leak.
+            raise EgressError("Cannot verify LinkBound's internet route")
+        if " dev tailscale0 " not in f" {result.stdout.strip()} ":
+            return False
+    return True
 
 
 class ExitNodeController:
@@ -113,8 +120,12 @@ class ExitNodeController:
             raise EgressError("Selected exit node is not approved or no longer exists")
         if not node["online"]:
             raise EgressError("Selected exit node is offline")
-        self.switch(node_id)
         try:
+            if self.selected():
+                self.switch("")
+                if self.selected():
+                    raise EgressError("Previous exit-node route could not be cleared")
+            self.switch(node_id)
             # `tailscale set` normally applies immediately. Allow a short status lag.
             for attempt in range(3):
                 status = self.status()
@@ -137,7 +148,7 @@ class ExitNodeController:
                 if attempt < 2:
                     time.sleep(0.5)
             raise EgressError("Tailscale route did not select the requested exit node")
-        except Exception:
+        except BaseException:
             try:
                 self.switch("")
             finally:
@@ -158,8 +169,8 @@ class ExitNodeController:
     def end(self) -> None:
         if not self.active_node:
             return
-        try:
-            self.switch("")
-        finally:
-            self.active_node = ""
-            self.observation = None
+        self.switch("")
+        if self.selected():
+            raise EgressError("Tailscale exit node remained selected after cleanup")
+        self.active_node = ""
+        self.observation = None

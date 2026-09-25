@@ -43,8 +43,15 @@ class RunCoordinator:
             (o for o in self.orchestrators.values() if o.is_busy()), None
         )
 
+    def _assert_egress_healthy(self) -> None:
+        if getattr(self.settings, "require_exit_node", False) and getattr(
+            self.settings, "egress_cleanup_fault", ""
+        ):
+            raise RuntimeError("Exit-node cleanup failed; inspect and restart LinkBound before browser work")
+
     async def run_inbound(self, operator: str, operation) -> Any:
         """Give one no-send collector exclusive ownership of the browser profile."""
+        self._assert_egress_healthy()
         if self.active() is not None:
             raise RuntimeError("A browser operation is already in progress.")
         self._inbound_activity = _InboundActivity(
@@ -56,6 +63,7 @@ class RunCoordinator:
             self._inbound_activity = None
 
     async def start(self, operator: str, jobs: list[dict], **kwargs: Any) -> Orchestrator:
+        self._assert_egress_healthy()
         if not kwargs.get("dry_run", False) and not self.settings.allow_live_sends:
             raise RuntimeError("Live sends are disabled on this host.")
         if self.active() is not None:
@@ -66,6 +74,8 @@ class RunCoordinator:
 
     async def resolve_names(self, operator: str, jobs: list[dict], *, mode: str,
                             exit_node_id: str = "") -> list[dict]:
+        if mode == "page":
+            self._assert_egress_healthy()
         if self.active() is not None:
             raise RuntimeError("A browser operation is already in progress.")
         return await self.get(operator).resolve_names(
