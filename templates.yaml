@@ -1,0 +1,27 @@
+# Named message templates. The CSV's "template" (or "type") column selects one per row.
+# Variables in {curly_braces} are filled from the row's mapped fields.
+#
+# Available variables depend on what your CSV contains:
+#   {first_name}  always available (derived from a "name" column if needed)
+#   {sender}      the SELECTED operator's first name (from config.yaml operators)
+#   {last_name}, {company}, {role}  only if those columns exist in the CSV
+#
+# Use {sender} for the signature so the name matches whoever is sending. If a
+# template references a variable that's missing for a row, that row is flagged
+# and NOT sent (no half-filled messages). The defaults below use {first_name}
+# and {sender}, so they work with a CSV of just url + name + template.
+#
+# Hard limit: connection-request NOTES must be <= 300 characters. Direct
+# messages to existing connections have no such limit. Use \n\n for a paragraph
+# break. Templates over 300 chars are flagged and skipped for connection
+# requests, but still send fine as DMs to people you're already connected to.
+
+networking: "Hi {first_name}, I came across your profile and your work at {company} caught my eye. Building in a similar space and would love to exchange notes. Open to a quick chat?"
+
+sales_intro: "Hi {first_name}, noticed {company} is growing fast, congrats. We help teams like yours with [your value prop]. Worth a quick 15 min to see if it's relevant?"
+
+partnership: "Hi {first_name}, I think there's a natural overlap between what we're building and what {company} does. Would love to explore if there's a way to collaborate. Open to a brief chat?"
+
+warm_intro: "Hi {first_name}, {sender} here. A mutual connection suggested we connect. I'd love to learn more about what you're working on. Open to a quick call sometime?"
+
+hiring: "Hi {first_name}, building a team and your background caught my eye. We're working on something I think you'd find interesting. If you're open to exploring, I'd love to chat."
